@@ -125,11 +125,16 @@ keeping a separate loose folder, to avoid two sources of truth.
   (`GripperActionController`). Written against Humble's documented macro
   APIs but not yet rendered against the real installed packages --
   `scripts/verify_description.sh` checks this once they're installed.
-- **Phase 2 (done):** `models/jack_daniels_bottle` (converted from the
-  supplied OBJ: background plane stripped, rescaled to a realistic 24.5cm
-  bottle, recentered at its base, cylinder collision), `models/serving_glass`,
-  `models/bar_counter` all exist as SDF models with valid XML; `bar_world.sdf`
-  places them together with the robot spawn point.
+- **Phase 2 (done, verified):** `models/jack_daniels_bottle` (converted from
+  the supplied OBJ: background plane stripped, rescaled to a realistic
+  24.5cm bottle, recentered at its base, cylinder collision),
+  `models/serving_glass`, `models/bar_counter` all exist as SDF models;
+  `bar_world.sdf` places them together with the robot spawn point.
+  Actually loaded in Gazebo Sim (`ign gazebo -s -r`) on this machine: all
+  four models (ground_plane, bar_counter, jack_daniels_bottle,
+  serving_glass) spawn with no errors/warnings in the log, and the bottle
+  and glass stay put on the counter (pose unchanged) after 2000 physics
+  iterations -- collision geometry and counter height are consistent.
 - **Phase 3:** not started -- needs Phase 0's install and MoveIt Setup
   Assistant run (see `bartender_moveit_config/README.md`).
 - **Phase 4 (drafted, unverified):** `bartender_pour_interfaces/action/PourDrink.action`
