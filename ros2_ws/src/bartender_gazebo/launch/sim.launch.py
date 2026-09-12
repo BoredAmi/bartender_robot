@@ -29,15 +29,28 @@ def generate_launch_description():
 
     world_path = os.path.join(pkg_gazebo, 'worlds', 'bar_world.sdf')
 
+    # ROS2 Humble's setup.bash does not add /opt/ros/humble/lib to Gazebo's
+    # own plugin search path, so gz_ros2_control-system (referenced by
+    # bartender.urdf.xacro's <gazebo><plugin> tag) fails to load with
+    # "couldn't find shared library" unless this is set explicitly.
+    ros_lib_path = '/opt/ros/humble/lib'
+    existing_plugin_path = os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', '')
+    gz_plugin_path = ros_lib_path if not existing_plugin_path else \
+        existing_plugin_path + os.pathsep + ros_lib_path
+
     gz_sim = ExecuteProcess(
         cmd=['ign', 'gazebo', '-r', world_path],
-        additional_env={'GZ_SIM_RESOURCE_PATH': gz_resource_path},
+        additional_env={
+            'GZ_SIM_RESOURCE_PATH': gz_resource_path,
+            'GZ_SIM_SYSTEM_PLUGIN_PATH': gz_plugin_path,
+            'IGN_GAZEBO_SYSTEM_PLUGIN_PATH': gz_plugin_path,
+        },
         output='screen',
     )
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'bartender.urdf.xacro')
     robot_description_content = ParameterValue(
-        Command([FindExecutable(name='xacro'), ' ', xacro_file, ' sim_gazebo:=true']),
+        Command([FindExecutable(name='xacro'), ' ', xacro_file, ' sim_ignition:=true']),
         value_type=str,
     )
 

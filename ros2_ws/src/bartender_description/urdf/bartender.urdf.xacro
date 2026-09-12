@@ -5,17 +5,20 @@
   ros2_control / gz_ros2_control wiring needed to drive both in Gazebo Sim.
 
   NOTE: this file is written against the macro signatures published for
-  ur_description and robotiq_description as of ROS2 Humble. Those packages
-  are not yet installed on this machine (apt install pending -- see
-  PLAN.md / README). Once installed, run `scripts/verify_description.sh`
+  ur_description and robotiq_description as of ROS2 Humble. Run
+  `scripts/verify_description.sh` after installing/updating those packages
   (or just `xacro bartender.urdf.xacro | check_urdf /dev/stdin`) and fix
-  any macro parameter mismatches it reveals -- xacro macro APIs occasionally
-  gain/rename parameters between package releases.
+  any macro parameter mismatches it reveals; xacro macro APIs occasionally
+  gain or rename parameters between package releases.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="bartender_ur5e">
 
   <xacro:arg name="ur_type" default="ur5e"/>
-  <xacro:arg name="sim_gazebo" default="true"/>
+  <!-- Gazebo Sim (Ignition), not Gazebo Classic. Passing both sim_gazebo
+       and sim_ignition as true to ur_macro.xacro emits two <plugin> tags in
+       the same <hardware> block, which gz_ros2_control then fails to
+       resolve (it picks the first, classic one, which isn't registered). -->
+  <xacro:arg name="sim_ignition" default="true"/>
   <xacro:arg name="use_fake_hardware" default="false"/>
 
   <!-- ============ UR5e arm ============ -->
@@ -28,17 +31,17 @@
     tf_prefix=""
     parent="world"
     ur_type="$(arg ur_type)"
-    joint_limit_params="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"
-    kinematics_params="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"
-    physical_params="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"
-    visual_params="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"
+    joint_limits_parameters_file="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"
     safety_limits="false"
     safety_pos_margin="0.15"
     safety_k_position="20"
     use_fake_hardware="$(arg use_fake_hardware)"
     fake_sensor_commands="false"
-    sim_gazebo="$(arg sim_gazebo)"
-    sim_ignition="$(arg sim_gazebo)"
+    sim_gazebo="false"
+    sim_ignition="$(arg sim_ignition)"
     headless_mode="false"
   >
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -53,18 +56,17 @@
     parent="tool0"
     use_fake_hardware="$(arg use_fake_hardware)"
     include_ros2_control="true"
-    sim_gazebo="$(arg sim_gazebo)"
-    sim_ignition="$(arg sim_gazebo)"
+    sim_ignition="$(arg sim_ignition)"
   >
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:robotiq_gripper>
 
   <!-- ============ gz_ros2_control plugin ============ -->
-  <!-- Only needed once: ur_macro.xacro's sim_gazebo/sim_ignition args already
-       add the ros2_control tags + gz_ros2_control system interface for the
-       arm joints; this block adds the plugin declaration that points both
-       arm and gripper controllers at the shared controllers.yaml. -->
-  <xacro:if value="$(arg sim_gazebo)">
+  <!-- Only needed once: ur_macro.xacro's sim_ignition arg already adds the
+       ros2_control tags + gz_ros2_control system interface for the arm
+       joints; this block adds the plugin declaration that points both arm
+       and gripper controllers at the shared controllers.yaml. -->
+  <xacro:if value="$(arg sim_ignition)">
     <gazebo>
       <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
         <parameters>$(find bartender_description)/config/controllers.yaml</parameters>
