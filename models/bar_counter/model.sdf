@@ -1,0 +1,41 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="bar_counter">
+    <static>true</static>
+    <!-- Link origin is the center of the counter's top surface, so placing
+         the model at z=0 in the world puts the tabletop at world z=0 and
+         everything standing on it (robot base, bottle, glass) at z=0. -->
+    <link name="counter_link">
+      <visual name="counter_visual">
+        <pose>0 0 -0.45 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.2 0.6 0.9</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.25 0.15 0.08 1</ambient>
+          <diffuse>0.35 0.22 0.12 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+
+      <collision name="counter_collision">
+        <pose>0 0 -0.45 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.2 0.6 0.9</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.8</mu>
+              <mu2>0.8</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+    </link>
+  </model>
+</sdf>

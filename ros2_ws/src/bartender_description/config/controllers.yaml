@@ -1,0 +1,49 @@
+# ros2_control controller_manager configuration for the bartender UR5e +
+# Robotiq 2F-85 in Gazebo Sim.
+#
+# NOTE: joint names below assume ur_description's default (unprefixed) UR5e
+# joint names and robotiq_description's default gripper joint name. Verify
+# these against `ros2 control list_hardware_interfaces` once the sim is
+# running for the first time, and correct if the installed package versions
+# differ.
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    ur_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+ur_arm_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 0.5
+
+gripper_controller:
+  ros__parameters:
+    joint: robotiq_85_left_knuckle_joint
+    action_monitor_rate: 20.0
+    goal_tolerance: 0.01
+    allow_stalling: true
+    stall_timeout: 1.0

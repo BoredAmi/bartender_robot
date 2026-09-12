@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<!--
+  Composes a UR5e (ros-humble-ur-description) with a Robotiq 2F-85 gripper
+  (ros-humble-robotiq-description) mounted at the tool flange, plus the
+  ros2_control / gz_ros2_control wiring needed to drive both in Gazebo Sim.
+
+  NOTE: this file is written against the macro signatures published for
+  ur_description and robotiq_description as of ROS2 Humble. Those packages
+  are not yet installed on this machine (apt install pending -- see
+  PLAN.md / README). Once installed, run `scripts/verify_description.sh`
+  (or just `xacro bartender.urdf.xacro | check_urdf /dev/stdin`) and fix
+  any macro parameter mismatches it reveals -- xacro macro APIs occasionally
+  gain/rename parameters between package releases.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="bartender_ur5e">
+
+  <xacro:arg name="ur_type" default="ur5e"/>
+  <xacro:arg name="sim_gazebo" default="true"/>
+  <xacro:arg name="use_fake_hardware" default="false"/>
+
+  <!-- ============ UR5e arm ============ -->
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur"
+    tf_prefix=""
+    parent="world"
+    ur_type="$(arg ur_type)"
+    joint_limit_params="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"
+    kinematics_params="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"
+    physical_params="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"
+    visual_params="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"
+    safety_limits="false"
+    safety_pos_margin="0.15"
+    safety_k_position="20"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    fake_sensor_commands="false"
+    sim_gazebo="$(arg sim_gazebo)"
+    sim_ignition="$(arg sim_gazebo)"
+    headless_mode="false"
+  >
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- ============ Robotiq 2F-85 gripper, mounted at the UR tool flange ============ -->
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+
+  <xacro:robotiq_gripper
+    name="RobotiqGripper"
+    prefix=""
+    parent="tool0"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    include_ros2_control="true"
+    sim_gazebo="$(arg sim_gazebo)"
+    sim_ignition="$(arg sim_gazebo)"
+  >
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_gripper>
+
+  <!-- ============ gz_ros2_control plugin ============ -->
+  <!-- Only needed once: ur_macro.xacro's sim_gazebo/sim_ignition args already
+       add the ros2_control tags + gz_ros2_control system interface for the
+       arm joints; this block adds the plugin declaration that points both
+       arm and gripper controllers at the shared controllers.yaml. -->
+  <xacro:if value="$(arg sim_gazebo)">
+    <gazebo>
+      <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(find bartender_description)/config/controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+
+</robot>
