@@ -9,8 +9,15 @@ touches _move_to_named_waypoint / _move_to_pose, not the state machine.
 
 Nested action calls (this server calling the MoveGroup and GripperCommand
 action clients) require a MultiThreadedExecutor with a ReentrantCallbackGroup
--- see main().
+-- see main(). They block on a plain threading.Event rather than
+rclpy.spin_until_future_complete(): that call grabs rclpy's process-global
+executor internally, which conflicts with this node already being spun by
+our own MultiThreadedExecutor (a node must only ever be associated with one
+executor) and deadlocks the nested call. Blocking a worker thread on an
+Event is safe instead, since the executor's other threads stay free to
+service the nested client's response/result callbacks and fire it.
 """
+import threading
 import time
 
 import rclpy
@@ -80,6 +87,17 @@ class PourActionServer(Node):
 
     # ---- motion helpers -------------------------------------------------
 
+    @staticmethod
+    def _block_on(future, timeout_sec: float):
+        """Block the calling (executor worker) thread until `future` is
+        done, without spinning anything ourselves -- this node's own
+        MultiThreadedExecutor is already spinning in another thread and
+        will service the callback that completes `future`."""
+        done = threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        done.wait(timeout=timeout_sec)
+        return future.result() if future.done() else None
+
     def _move_to_named_waypoint(self, name: str) -> bool:
         positions = WAYPOINTS_RAD[name]
         joint_constraints = [
@@ -105,15 +123,13 @@ class PourActionServer(Node):
             return False
 
         send_future = self._move_group_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=15.0)
-        goal_handle = send_future.result()
+        goal_handle = self._block_on(send_future, timeout_sec=15.0)
         if goal_handle is None or not goal_handle.accepted:
             self.get_logger().error(f'MoveGroup goal to "{name}" rejected')
             return False
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=30.0)
-        result = result_future.result()
+        result = self._block_on(result_future, timeout_sec=30.0)
         if result is None:
             self.get_logger().error(f'MoveGroup goal to "{name}" timed out')
             return False
@@ -134,15 +150,14 @@ class PourActionServer(Node):
         goal.command.max_effort = GRIPPER_MAX_EFFORT
 
         send_future = self._gripper_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=10.0)
-        goal_handle = send_future.result()
+        goal_handle = self._block_on(send_future, timeout_sec=10.0)
         if goal_handle is None or not goal_handle.accepted:
             self.get_logger().error('gripper goal rejected')
             return False
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=10.0)
-        return result_future.result() is not None
+        result = self._block_on(result_future, timeout_sec=10.0)
+        return result is not None
 
     # ---- the pour state machine ------------------------------------------
 

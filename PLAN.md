@@ -107,52 +107,59 @@ keeping a separate loose folder, to avoid two sources of truth.
 
 ## Progress
 
-- **Phase 0 (partial):** repo initialized, `ros2_ws/src` scaffolded with six
-  packages (`bartender_description`, `bartender_gazebo`,
-  `bartender_moveit_config`, `bartender_bringup`, `bartender_pour`,
-  `bartender_pour_interfaces`), all building cleanly with `colcon build`.
-  **Blocked on the user**: the apt install of `ros-humble-moveit`,
-  `ur-description`, `ur-simulation-gz`, `ur-moveit-config`,
-  `robotiq-description`, `robotiq-controllers`, `ros2-control`,
-  `ros2-controllers`, `gz-ros2-control` needs `sudo` and hasn't run yet
-  (command is in README.md). The stock `ur_simulation_gz` demo baseline
-  check is still pending that install.
-- **Phase 1 (drafted, unverified):** `bartender_description/urdf/bartender.urdf.xacro`
+- **Phase 0 (done):** repo initialized, `ros2_ws/src` scaffolded with six
+  packages, all building cleanly with `colcon build`. The apt install
+  (README.md) has been run by the user; all target packages confirmed
+  installed via `dpkg -l`.
+- **Phase 1 (done, verified):** `bartender_description/urdf/bartender.urdf.xacro`
   composes `ur_macro.xacro` (UR5e) + `robotiq_2f_85_macro.urdf.xacro`
-  (gripper) + `gz_ros2_control` plugin; `config/controllers.yaml` defines
-  `joint_state_broadcaster` + `ur_arm_controller`
-  (`joint_trajectory_controller`) + `gripper_controller`
-  (`GripperActionController`). Written against Humble's documented macro
-  APIs but not yet rendered against the real installed packages --
-  `scripts/verify_description.sh` checks this once they're installed.
-- **Phase 2 (done, verified):** `models/jack_daniels_bottle` (converted from
-  the supplied OBJ: background plane stripped, rescaled to a realistic
-  24.5cm bottle, recentered at its base, cylinder collision),
-  `models/serving_glass`, `models/bar_counter` all exist as SDF models;
-  `bar_world.sdf` places them together with the robot spawn point.
-  Actually loaded in Gazebo Sim (`ign gazebo -s -r`) on this machine: all
-  four models (ground_plane, bar_counter, jack_daniels_bottle,
-  serving_glass) spawn with no errors/warnings in the log, and the bottle
-  and glass stay put on the counter (pose unchanged) after 2000 physics
-  iterations -- collision geometry and counter height are consistent.
-- **Phase 3:** not started -- needs Phase 0's install and MoveIt Setup
-  Assistant run (see `bartender_moveit_config/README.md`).
-- **Phase 4 (drafted, unverified):** `bartender_pour_interfaces/action/PourDrink.action`
+  (gripper) + `gz_ros2_control` plugin. Fixed against the real installed
+  macro signatures (param names differed from what was guessed pre-install;
+  also had to split `sim_gazebo`/`sim_ignition` -- passing both true emits
+  two conflicting `<plugin>` tags) and a Gazebo plugin search path gap
+  (`GZ_SIM_SYSTEM_PLUGIN_PATH` isn't set by ROS2 Humble's setup.bash).
+  Verified live: full robot spawns in the bar world, `ros2 control
+  list_hardware_interfaces` shows all 6 arm joints + the gripper joint, a
+  `FollowJointTrajectory` goal moves the arm to the exact commanded
+  positions, and a `GripperCommand` goal closes the gripper.
+- **Phase 2 (done, verified):** as before -- bottle/glass/counter models,
+  `bar_world.sdf`, loads cleanly and holds physics.
+- **Phase 3 (done, verified):** `bartender_moveit_config` hand-written
+  (SRDF, kinematics/joint_limits/ompl/controllers yaml, move_group launch)
+  rather than Setup-Assistant-generated, adapted from ros-humble-ur-moveit-config's
+  reference SRDF/launch/config for the arm portion, extended with the
+  gripper group and its self-collision disables. Verified live: `move_group`
+  starts cleanly, responds to services, and plans/executes joint-space
+  goals against the real controllers. (Known cosmetic issue: RViz's
+  MotionPlanning display throws a kinematics param type error on startup;
+  RViz is off by default in bringup because of it -- see
+  `bartender_moveit_config/README.md`.)
+- **Phase 4 (done, verified):** `bartender_pour_interfaces/action/PourDrink.action`
   defined; `bartender_pour/pour_action_server.py` implements the
-  pick -> tilt -> pour -> return state machine as an action server, driving
-  MoveGroup (joint-space goals against placeholder waypoints) and
-  GripperCommand. Needs real joint waypoints and a live sim/MoveIt to
-  actually exercise.
-- **Phase 5:** not started.
+  pick -> tilt -> pour -> return state machine. Fixed a real deadlock bug
+  (nested `rclpy.spin_until_future_complete()` calls grab a process-global
+  executor that conflicts with the node's own `MultiThreadedExecutor`;
+  switched to blocking on a `threading.Event` set by the future's
+  done-callback instead). **Verified live end-to-end**: calling
+  `/pour_drink` runs the full cycle through real feedback states
+  (opening_gripper -> approaching_bottle -> grasping_bottle ->
+  closing_gripper -> lifting_bottle -> moving_to_glass -> pouring ->
+  returning_upright -> returning_bottle -> releasing_bottle ->
+  returning_home) and returns `success: true`. Remaining gap: the
+  `WAYPOINTS_RAD` joint values are still placeholders not tuned to the
+  bottle/glass's real poses -- confirmed the bottle's pose is unchanged
+  after a pour (gripper closes near it, doesn't actually contact/lift it).
+- **Phase 5:** not started -- next real work is retuning waypoints against
+  the actual bottle/glass poses so a pour physically moves the bottle.
 
 ## Next step
-1. Run the apt install command in README.md (needs sudo; not runnable from
-   this session).
-2. `colcon build`, then run `scripts/verify_description.sh` and fix any
-   macro-API mismatches it reports.
-3. Launch `ros2 launch bartender_gazebo sim.launch.py` and confirm the
-   composed robot spawns correctly in the bar world.
-4. Generate `bartender_moveit_config` via the Setup Assistant.
-5. Jog the arm in RViz/MoveIt to capture real values for
-   `WAYPOINTS_RAD` in `pour_action_server.py`, then run the full
-   `bartender_bringup` launch and call the `pour_drink` action.
+1. Jog the arm in RViz/MoveIt (or iterate via direct MoveGroup goals) to
+   find real joint values that put the gripper around the bottle's actual
+   neck position in `bar_world.sdf`, and around the glass for the pour
+   pose. Update `WAYPOINTS_RAD` in `pour_action_server.py` and the `home`
+   group_state in `bartender_moveit_config/srdf/bartender.srdf` to match.
+2. Re-run the `pour_drink` action and confirm via `ign model -m
+   jack_daniels_bottle -p` that the bottle's pose actually changes during
+   the grasp/lift/pour/return sequence (not just that the action reports
+   success).
+3. Move on to Phase 5 hardening once a real physical pour is confirmed.

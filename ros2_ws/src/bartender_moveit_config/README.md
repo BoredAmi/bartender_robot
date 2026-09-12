@@ -1,33 +1,37 @@
 # bartender_moveit_config
 
-Placeholder package. This needs to be generated with the MoveIt Setup
-Assistant, not hand-written -- the SRDF (planning groups, self-collision
-disable pairs, virtual joints) is exactly the kind of thing that's error-prone
-to author by hand and the Assistant computes/validates it interactively.
+Hand-written rather than MoveIt-Setup-Assistant-generated (the session that
+authored this had no way to drive the Assistant's GUI interactively), but
+verified working end-to-end in Gazebo Sim: `move_group` starts cleanly,
+plans/executes joint-space goals for the `ur_manipulator` group, and drives
+the `gripper` group's controller.
 
-## How to generate it (after Phase 0 apt install + workspace build)
+- `srdf/bartender.srdf` -- planning groups (`ur_manipulator`: base_link ->
+  tool0 chain; `gripper`: the one actuated knuckle joint), group_states,
+  and self-collision disables. The arm portion is adapted from
+  ros-humble-ur-moveit-config's own SRDF (same chain, same joint names).
+  Gripper self-collisions are disabled pairwise across all 9 links rather
+  than only true kinematic-adjacency pairs -- see the comment at the top of
+  the file for why that's a reasonable simplification here, not a shortcut
+  that silently hides a real gap.
+- `config/` -- kinematics.yaml, joint_limits.yaml, ompl_planning.yaml
+  (arm portion copied from ur-moveit-config, group name already matched),
+  moveit_controllers.yaml (mapped to this project's actual controller
+  names: `ur_arm_controller`, `gripper_controller`).
+- `launch/move_group.launch.py` -- same parameter set/structure as
+  ur-moveit-config's own launch file, adapted for our single fixed robot
+  (no per-instance UR driver args needed).
 
-```bash
-source /opt/ros/humble/setup.bash
-source ~/personal_projects/bartender_robot/ros2_ws/install/setup.bash
-ros2 launch moveit_setup_assistant setup_assistant.launch.py
-```
+## Known issue
 
-1. "Create New MoveIt Configuration Package" -> select
-   `bartender_description/urdf/bartender.urdf.xacro`.
-2. Self-Collisions: generate the default collision matrix (sampling).
-3. Planning Groups: add group `ur_manipulator` with the 6 UR joints
-   (kinematic chain base_link -> tool0, solver: KDL or the UR-specific IK
-   plugin if available); add group `gripper` with the gripper joint.
-4. Robot Poses: define at least `home` matching
-   `bartender_pour/pour_action_server.py`'s `WAYPOINTS_RAD['home']`.
-5. ROS2 Controllers: point at
-   `bartender_description/config/controllers.yaml` (arm: `ur_arm_controller`,
-   gripper: `gripper_controller`).
-6. Generate into this directory (`bartender_moveit_config`), overwriting the
-   package.xml/CMakeLists placeholders here.
+RViz's MotionPlanning display throws a `kinematics_solver_timeout` parameter
+type error on startup (double vs. string) when launched via
+`move_group.launch.py`'s `rviz_node`; `move_group` itself loads the same
+`kinematics.yaml` without issue. `bartender_bringup/launch/bartender_sim.launch.py`
+sets `launch_rviz:=false` by default because of this -- pass
+`launch_rviz:=true` to re-enable and debug it if you need RViz visualization.
 
-Once generated, uncomment the `bartender_moveit_config` include in
-`bartender_bringup/launch/bartender_sim.launch.py`, and confirm
-`ARM_GROUP_NAME` in `pour_action_server.py` matches the group name you chose
-in step 3.
+## If you retune the placeholder waypoints
+
+`bartender_pour/pour_action_server.py`'s `WAYPOINTS_RAD['home']` should stay
+in sync with the `home` group_state defined in `srdf/bartender.srdf`.

@@ -11,6 +11,7 @@
   <depend>bartender_gazebo</depend>
   <depend>bartender_description</depend>
   <depend>bartender_pour</depend>
+  <depend>bartender_moveit_config</depend>
   <depend>controller_manager</depend>
 
   <test_depend>ament_copyright</test_depend>

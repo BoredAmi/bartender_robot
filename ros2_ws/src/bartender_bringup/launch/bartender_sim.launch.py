@@ -1,10 +1,5 @@
 """Full Phase 1 stack: Gazebo Sim + bar scene + robot spawn, ros2_control
 controller spawners, MoveIt move_group, and the pour_drink action server.
-
-MoveIt integration (the `bartender_moveit_config` include below) only works
-once that package has been generated with the MoveIt Setup Assistant -- see
-README.md "Generating the MoveIt config". Until then, run just the
-controller-spawning half of this file for arm/gripper sim testing.
 """
 import os
 
@@ -62,12 +57,24 @@ def generate_launch_description():
         output='screen',
     )
 
+    move_group = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('bartender_moveit_config'),
+                         'launch', 'move_group.launch.py')
+        ),
+        # RViz's MotionPlanning display currently throws a kinematics
+        # parameter type error on startup here (rviz-only; move_group
+        # itself loads the same kinematics.yaml fine) -- off by default
+        # until that's tracked down. Pass launch_rviz:=true to re-enable.
+        launch_arguments={'launch_rviz': 'false'}.items(),
+    )
+    # move_group needs the ur_arm_controller/gripper_controller action
+    # servers to exist before it will accept execution requests.
+    delayed_move_group = TimerAction(period=8.0, actions=[move_group])
+
     return LaunchDescription([
         sim,
         delayed_controller_spawners,
         pour_action_server,
-        # TODO once bartender_moveit_config exists (see README):
-        # IncludeLaunchDescription(PythonLaunchDescriptionSource(
-        #     os.path.join(get_package_share_directory('bartender_moveit_config'),
-        #                  'launch', 'move_group.launch.py'))),
+        delayed_move_group,
     ])
