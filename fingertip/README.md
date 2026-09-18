@@ -64,6 +64,19 @@ the plate up to the gripper **before** committing to a full tip.
 ## Parameters
 
 ### Bottle
+
+You usually should not need to measure these per bottle. The **finish** -- the
+neck and mouth -- is the most standardised part of a glass bottle, because
+closures have to fit it, and the ring this tip hooks under is normally the
+**transfer bead**, which exists so factory conveyors can carry bottles by the
+neck. Neck handling is established practice; this is a small version of it.
+
+`--list-finishes` shows the known ones (crown, BVS 30H60, wine cork, GPI 400).
+Their dimensions are deliberately **not filled in**: they have to come from the
+glass supplier's finish drawing, the GPI/SPI or CETIE standard sheet, or a
+caliper. Fill them into `FINISHES` and record `source` alongside. Using an
+unfilled finish exits 2 rather than guessing.
+
 | name | meaning |
 |---|---|
 | `neck_d` | Neck outside diameter, below the collar. The pocket is sized from this. |

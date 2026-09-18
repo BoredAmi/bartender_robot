@@ -11,8 +11,9 @@ from dataclasses import replace
 
 import pytest
 
-from fingertip import (MOUNT_PLACEHOLDERS, PARAMS, ValidationError,
-                       build_mount_plate, build_pair, build_tip, validate)
+from fingertip import (FINISHES, MOUNT_PLACEHOLDERS, PARAMS,
+                       ValidationError, build_mount_plate, build_pair,
+                       build_tip, main, validate)
 
 
 # --------------------------------------------------------------------------
@@ -274,3 +275,35 @@ def test_step_round_trips(tmp_path, tip):
     assert bb_b.size.X == pytest.approx(bb_a.size.X, abs=1e-6)
     assert bb_b.size.Y == pytest.approx(bb_a.size.Y, abs=1e-6)
     assert bb_b.size.Z == pytest.approx(bb_a.size.Z, abs=1e-6)
+
+
+# --------------------------------------------------------------------------
+# bottle finishes
+# --------------------------------------------------------------------------
+def test_finish_dimensions_are_complete_or_absent():
+    """Half a finish is worse than none: it would build a wrong part."""
+    for f in FINISHES.values():
+        assert (f.neck_d is None) == (f.collar_d is None), f.name
+
+
+def test_a_filled_finish_records_where_it_came_from():
+    for f in FINISHES.values():
+        if f.neck_d is not None:
+            assert f.source, (
+                f"finish {f.name!r} has dimensions but no source; record the "
+                f"drawing or standard they came from")
+
+
+def test_every_finish_says_what_it_is():
+    for f in FINISHES.values():
+        assert f.note
+
+
+def test_unfilled_finish_refuses_rather_than_guessing(tmp_path, capsys):
+    unfilled = [n for n, f in FINISHES.items() if f.neck_d is None]
+    if not unfilled:
+        pytest.skip("all finishes have been filled in")
+    rc = main(["--finish", unfilled[0], "--out", str(tmp_path)])
+    assert rc == 2
+    assert "no dimensions filled in" in capsys.readouterr().err
+    assert not list(tmp_path.glob("*.step"))

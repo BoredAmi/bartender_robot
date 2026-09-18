@@ -56,6 +56,51 @@ MOUNT_PLACEHOLDERS = {
 }
 
 
+# --------------------------------------------------------------------------
+# BOTTLE FINISHES
+#
+# The "finish" is the neck and mouth of a glass bottle, and it is the most
+# standardised part of one: closures have to fit it, so it is specified where
+# the body is not. The feature this fingertip hooks under is usually the
+# TRANSFER BEAD (or transfer ring), the raised ring just below the finish --
+# which exists so that factory conveyors can carry bottles by the neck. This
+# tip is a small version of equipment that already exists.
+#
+# So the sane way to drive this generator is to name a finish rather than
+# measure each bottle. The names below are real; THE NUMBERS ARE NOT FILLED
+# IN, because they have to come from the finish drawing for the bottle you are
+# actually running, not from memory. Get them from the glass supplier's finish
+# spec, the GPI/SPI or CETIE standard sheet, or a caliper, then record where
+# they came from in `source` so the next person can check.
+#
+#     neck_d   outside diameter of the neck BELOW the bead
+#     collar_d outside diameter of the bead itself
+#
+# Using a finish whose numbers are still None fails loudly rather than
+# guessing. --finish is a convenience over --neck-d/--collar-d, not a
+# substitute for knowing the dimensions.
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Finish:
+    """A standard bottle finish. None means "not filled in yet"."""
+
+    name: str
+    neck_d: float | None = None      # mm, neck OD below the transfer bead
+    collar_d: float | None = None    # mm, transfer bead OD
+    source: str = ""                 # where those numbers came from
+    note: str = ""
+
+
+FINISHES = {
+    f.name: f for f in (
+        Finish("crown", note="beer, 26mm crown cap (GPI/CETIE crown finish)"),
+        Finish("bvs30h60", note="wine/spirits screwcap, BVS 30H60"),
+        Finish("wine-cork", note="still wine, CETIE cork finish"),
+        Finish("gpi-400", note="GPI/SPI 400 continuous thread"),
+    )
+}
+
+
 class ValidationError(Exception):
     """Geometry that would produce a part that cannot work. Never clamped."""
 
@@ -605,12 +650,43 @@ def main(argv=None) -> int:
                          "print to check the bolt pattern lines up")
     ap.add_argument("--no-countersink", action="store_true",
                     help="plain through-holes instead of M4 countersinks")
+    ap.add_argument("--finish", choices=sorted(FINISHES),
+                    help="take neck_d and collar_d from a standard bottle "
+                         "finish instead of giving them individually")
+    ap.add_argument("--list-finishes", action="store_true",
+                    help="show the known finishes and whether their "
+                         "dimensions have been filled in")
     ap.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                     help="override any other Params field, e.g. --set "
                          "body_w=42. Repeatable.")
     args = ap.parse_args(argv)
 
+    if args.list_finishes:
+        print("bottle finishes (the neck/mouth region, which IS standardised;")
+        print("the hook catches the transfer bead just below it):\n")
+        for f in FINISHES.values():
+            filled = (f"neck {f.neck_d} / bead {f.collar_d} mm"
+                      if f.neck_d is not None else
+                      "NOT FILLED IN -- add it from the finish drawing")
+            print(f"  {f.name:12s} {filled}")
+            print(f"  {'':12s} {f.note}")
+            if f.source:
+                print(f"  {'':12s} source: {f.source}")
+            print()
+        return 0
+
     p = PARAMS
+    if args.finish:
+        f = FINISHES[args.finish]
+        if f.neck_d is None or f.collar_d is None:
+            print(f"ERROR: finish {f.name!r} has no dimensions filled in yet.\n"
+                  f"       {f.note}\n"
+                  f"       Add neck_d and collar_d to FINISHES from the finish\n"
+                  f"       drawing or a caliper, and record `source`. Nothing is\n"
+                  f"       guessed here. Meanwhile pass --neck-d and --collar-d.",
+                  file=sys.stderr)
+            return 2
+        p = replace(p, neck_d=f.neck_d, collar_d=f.collar_d)
     if args.neck_d is not None:
         p = replace(p, neck_d=args.neck_d)
     if args.collar_d is not None:
