@@ -25,6 +25,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from dataclasses import dataclass, fields, replace
@@ -557,10 +558,23 @@ def build_pair(p: Params):
 # --------------------------------------------------------------------------
 # export / CLI
 # --------------------------------------------------------------------------
-def export(part, stem: str, out: Path) -> None:
+def export(part, stem: str, out: Path, p: Params | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     export_step(part, str(out / f"{stem}.step"))
     export_stl(part, str(out / f"{stem}.stl"))
+    if p is not None:
+        # Sidecar of the derived dimensions, so anything that has to POSITION
+        # this mesh (the Gazebo/MoveIt description, for one) does not have to
+        # re-derive them or keep a second copy in step with this file.
+        (out / f"{stem}.json").write_text(json.dumps({
+            "body_w": p.body_w, "body_h": p.body_h, "body_t": p.body_t,
+            "mount_plate_t": p.mount_plate_t, "front_x": p.front_x,
+            "neck_d": p.neck_d, "collar_d": p.collar_d,
+            "pocket_r": p.pocket_r, "pocket_arc": p.pocket_arc,
+            "axis_x": p.axis_x, "ledge_z": p.ledge_z,
+            "ledge_bearing_width": p.ledge_bearing_width,
+            "opening_with_tips": p.opening_with_tips,
+        }, indent=2) + "\n")
     bb = part.bounding_box()
     print(f"  {stem:22s} volume {part.volume:9.1f} mm^3   "
           f"bbox {bb.size.X:.1f} x {bb.size.Y:.1f} x {bb.size.Z:.1f} mm")
@@ -591,6 +605,9 @@ def main(argv=None) -> int:
                          "print to check the bolt pattern lines up")
     ap.add_argument("--no-countersink", action="store_true",
                     help="plain through-holes instead of M4 countersinks")
+    ap.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                    help="override any other Params field, e.g. --set "
+                         "body_w=42. Repeatable.")
     args = ap.parse_args(argv)
 
     p = PARAMS
@@ -600,6 +617,21 @@ def main(argv=None) -> int:
         p = replace(p, collar_d=args.collar_d)
     if args.no_countersink:
         p = replace(p, countersink=False)
+    known = {f.name: f.type for f in fields(Params)}
+    for item in args.set:
+        name, _, value = item.partition("=")
+        name = name.strip()
+        if name not in known:
+            print(f"ERROR: no such parameter {name!r}. Known: "
+                  f"{', '.join(sorted(known))}", file=sys.stderr)
+            return 2
+        try:
+            coerced = (value.strip().lower() in ("1", "true", "yes")
+                       if known[name] == "bool" else float(value))
+        except ValueError:
+            print(f"ERROR: {name}={value!r} is not a number", file=sys.stderr)
+            return 2
+        p = replace(p, **{name: coerced})
 
     try:
         warnings = validate(p)
@@ -624,8 +656,8 @@ def main(argv=None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
-    export(left, "fingertip_left", args.out)
-    export(right, "fingertip_right", args.out)
+    export(left, "fingertip_left", args.out, p)
+    export(right, "fingertip_right", args.out, p)
     print(f"wrote STEP + STL to {args.out}")
     return 0
 
