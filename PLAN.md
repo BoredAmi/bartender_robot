@@ -1,5 +1,20 @@
 # Bartender Robot — Project Plan (Phase 1: Simulated Pouring)
 
+> **SUPERSEDED — kept as a record of how Phase 1 went, not as a plan.**
+>
+> This document describes a single-armed robot whose pour waypoints were
+> still placeholders. Since it was written the project gained a second arm,
+> a beer-opening skill, a teach pendant, a rebuilt bar, and ~950 tests, and
+> every "next step" below is long done.
+>
+> For what to do now, see **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+> For how the system is put together, **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+>
+> It is worth keeping because the Progress section records what actually
+> broke in phases 0-4 and how each was diagnosed -- the gz plugin search
+> path gap, the nested-executor deadlock, the split
+> `sim_gazebo`/`sim_ignition` flags.
+
 ## Goal
 Get a UR5e + parallel gripper to reliably pick up a bottle and pour a measured
 amount into a glass, fully in Gazebo simulation, driven by ROS2 nodes — before

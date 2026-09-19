@@ -46,6 +46,8 @@ import tempfile
 
 import yaml
 
+from bartender_teach.pipelines import Pipeline, PipelineError
+
 # Wrapping is not cosmetic. /compute_ik hands back arbitrary branches, often
 # out near +/-2pi, which describe the same pose but force a long wrist sweep
 # to reach -- pour_action_server has a note about exactly this dragging the
@@ -201,6 +203,12 @@ class PointStore:
         self.group = group
         self.eef_link = eef_link
         self.points = {}
+        # Pipelines live in the same file as the points they name. They are
+        # a separate mapping rather than a kind of point because nothing that
+        # only consumes points -- pour_action_server, open_action_server --
+        # has any use for them, and an empty `pipelines:` key costs those
+        # readers nothing.
+        self.pipelines = {}
 
     # -- io ---------------------------------------------------------------
 
@@ -232,6 +240,22 @@ class PointStore:
                 f'mapping of name -> point')
         for name, d in points.items():
             store.points[str(name)] = Point.from_dict(str(name), d, path)
+
+        pipelines = raw.get('pipelines') or {}
+        if not isinstance(pipelines, dict):
+            raise PointStoreError(
+                f'{path}: `pipelines:` is {type(pipelines).__name__}, '
+                f'expected a mapping of name -> pipeline')
+        for name, d in pipelines.items():
+            # Surfaced as a PointStoreError so that every caller which
+            # already handles a malformed point file handles a malformed
+            # pipeline too, rather than dying on an exception type it has
+            # never heard of. The message is the pipeline module's.
+            try:
+                store.pipelines[str(name)] = Pipeline.from_dict(
+                    str(name), d, path)
+            except PipelineError as exc:
+                raise PointStoreError(str(exc)) from None
         return store
 
     def save(self):
@@ -249,6 +273,11 @@ class PointStore:
             'eef_link': self.eef_link,
             'points': {n: p.to_dict() for n, p in sorted(self.points.items())},
         }
+        # Omitted entirely when there are none, so a workspace that never
+        # records a pipeline keeps the file it had and the diff stays empty.
+        if self.pipelines:
+            body['pipelines'] = {
+                n: p.to_dict() for n, p in sorted(self.pipelines.items())}
         directory = os.path.dirname(os.path.abspath(self.path)) or '.'
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory, suffix='.tmp')

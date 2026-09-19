@@ -13,11 +13,18 @@ them up is silent and produces a plan that just misses.
   world        Gazebo's. The world SDF poses everything in it. Not a TF
                frame anything in ROS plans against.
   base_link    arm A's base. bartender_pour plans everything in it. It is at
-               world (-0.4, 0, 0.9) -- that is the ros_gz `create` spawn pose
-               in bartender_gazebo/launch/sim.launch.py, not a coincidence
-               and not written down anywhere else.
-  b_base_link  arm B's base, at world (0.15, 0.62, 0.9) yawed -90 degrees so
-               its +x faces back across the counter.
+               world (-0.45, -0.375, 0.9) -- that is the ros_gz `create`
+               spawn pose in bartender_gazebo/launch/sim.launch.py, not a
+               coincidence and not written down anywhere else.
+  b_base_link  arm B's base, at world (-0.45, 0.375, 0.9).
+
+The two arms differ by a PURE TRANSLATION of 0.75 along arm A's +y: same
+height, same yaw, side by side on the same bar top facing the same way. So
+converting between them is an offset, arm B's poses are arm A's with y
+mirrored about the bar's centreline, and b_home is just home. That is worth
+the paragraph because it used not to be true -- arm B stood on a pedestal
+beside a smaller counter, yawed -90 degrees to face back across it, and
+every pose for it had to be worked out separately.
 
 Both arm bases sit at world z = 0.9, which is the counter top. So a z in
 either arm's frame is "height above the counter", the two agree, and the
@@ -25,38 +32,134 @@ bottle geometry (measured up from a bottle's base, which rests on the
 counter) drops straight in. That is a convenience the layout was chosen to
 keep, not a given.
 
-WHY THE STATIONS ARE WHERE THEY ARE
------------------------------------
-The beer has to be somewhere BOTH arms can work, because the whole sequence
-is one arm holding it while the other pushes down on it. (-0.02, 0.21) is
-434mm from arm A's base and 444mm from arm B's -- near enough the same, well
-inside a UR5e's 850mm, and 180mm clear of the whiskey stand's rim.
+THE BAR TOP
+-----------
+1.5 x 2.0, centred at world (-0.10, 0), top at 0.9. Three rows, and every
+station is on one of them:
 
-The opener only ever needs arm B, so it sits on arm B's side at (0.45, 0.20),
-516mm out and clear of the cola station.
+  the arms        x = -0.45. A at y = -0.40, B at y = +0.40.
+  the bottle line x = 0.07, so 0.52 in front of both arms. Nine slots at a
+                  0.20 pitch, y = -0.80 to +0.80. whiskey, cola and beer
+                  occupy three, two are pour lanes that stay empty, and the
+                  remaining four are free: this is where another bottle
+                  goes, and putting one there should cost a slot and a
+                  station name, not a re-survey.
+  serving strip   x = 0.22. The glass on arm A's centreline, the opener's
+                  holster on arm B's, 0.67 dead ahead of each.
+
+WHY A LINE, AND WHY THAT WAY ROUND
+----------------------------------
+The line runs ACROSS each arm's approach rather than along it. bartender_pour
+grasps from the side, running the gripper in along the arm's own +x, so every
+slot at a common x has its own clear lane in front of it and no bottle ever
+stands behind another. A row of bottles laid out along the approach direction
+would put the far ones behind the near ones, which is the one arrangement a
+side grasp cannot use.
+
+It also makes the stations cheap to reason about: each arm's reach to a slot
+is hypot(0.52, |slot_y - arm_y|), which is 0.52 for a slot straight ahead and
+0.656 at the far end of what either arm can service.
+
+The beer takes the middle slot because it is the one station that has to
+satisfy two arms at once -- one holds the bottle while the other pushes down
+on it -- and the middle of a bar with an arm at each side is equidistant by
+construction rather than by search.
+
+WHAT SETS THE TWO ROW DEPTHS
+----------------------------
+Not taste. A UR5e's usable band here runs from about 0.29 of flange radius
+(closer and the gripper folds back over the arm's own shoulder) to about
+0.68 of station radius, and both rows plus their stand-offs have to fit in
+that 0.39m.
+
+  The bottle line is at 0.52 because bartender_pour approaches a side grasp
+  from GRIP_AHEAD_OF_TOOL0 + APPROACH_BACKOFF = 0.245 back along the arm's
+  +x. That puts the approach flange at 0.275, at a radius of 0.340 with the
+  slot's y offset -- the same 0.340 the old layout's whiskey approach sat
+  at, which is the one value here known to work.
+
+  The serving strip is at 0.67 because the opener has to stay inside 0.68
+  from arm B: not for the pick, which is comfortable, but for the cruise
+  over the holster at OPENER_TRANSIT_Z, where the flange is 0.713 from the
+  base and the limit is 0.75.
+
+That leaves 0.15 between the rows, and the reason that is enough is the
+lanes: the stations on the strip do not line up with any bottle.
 
 These are duplicated in bartender_gazebo/worlds/bar_world.sdf, which is what
-actually places the models. test_layout.py compares the two.
+actually places the models, and in bartender_pour, which states its own three
+in arm A's frame. test_layout.py compares all of them against this file.
 """
 import math
 
 # ---------------------------------------------------------------- the frames
 
 # Arm A's base in world coordinates: the spawn pose in sim.launch.py.
-ARM_A_ORIGIN = (-0.4, 0.0, 0.9)
+ARM_A_ORIGIN = (-0.45, -0.40, 0.9)
 ARM_A_YAW = 0.0
 
-# Arm B's base in world coordinates. The xacro states the same point
-# relative to arm A, as ARM_B_IN_A below, because that is how it is attached;
-# these two have to describe the same place.
-ARM_B_ORIGIN = (0.15, 0.62, 0.9)
-ARM_B_YAW = -math.pi / 2.0
+# Arm B's base in world coordinates, facing back down the bar at arm A. The
+# xacro states the same point relative to arm A, as ARM_B_IN_A below, because
+# that is how it is attached; these two have to describe the same place.
+#
+# WHY THE ARMS FACE EACH OTHER rather than standing side by side, which was
+# tried first and looks tidier: a UR5e with this tool orientation is not
+# symmetric about its own centreline. See APPROACH_WINDOW below. Facing them
+# at each other flips arm B's y axis, so the beer between them is at POSITIVE
+# y in BOTH frames and both arms work it from a well conditioned pose. Side
+# by side, the beer is necessarily on one arm's bad side, and measured, it is
+# the side where arm B cannot descend onto the cap.
+ARM_B_ORIGIN = (0.61, 0.40, 0.9)
+ARM_B_YAW = math.pi
 
+# Arm A's yaw is zero, so arm B's offset in arm A's frame is just the
+# difference. Its ORIENTATION in that frame is ARM_B_YAW, which the xacro
+# carries separately.
 ARM_B_IN_A = (ARM_B_ORIGIN[0] - ARM_A_ORIGIN[0],
               ARM_B_ORIGIN[1] - ARM_A_ORIGIN[1],
               ARM_B_ORIGIN[2] - ARM_A_ORIGIN[2])
 
 COUNTER_Z = 0.9                 # world z of the counter top
+
+# The bar top itself, as the world file places it. Not decoration: the
+# planning scene publishes a box of exactly this size and bartender_pour
+# restates it in arm A's frame, so a counter that grew here and nowhere else
+# is a counter the planner routes a forearm through.
+COUNTER_SIZE = (1.76, 1.60)
+COUNTER_CENTRE = (0.08, 0.0)
+
+# WHERE AN ARM CAN ACTUALLY TAKE A BOTTLE OFF THE LINE.
+#
+# This is the constraint that decides the whole layout, it is not obvious,
+# and it was found by measurement rather than by reading a datasheet.
+#
+# bartender_pour grasps from the side with a fixed tool orientation (tool0's
+# +z along the arm's +x), and the 2F-85 hanging off the wrist puts the wrist
+# centre off the arm's own centreline. So for a flange target at (x, y) in
+# the arm's frame, the shoulder pan that reaches it is NOT near the target's
+# bearing -- it is rotated off it, always the same way, and by more and more
+# as y goes negative. Measured on the running robot, at flange x = 0.305,
+# smallest achievable |pan| against the target's bearing:
+#
+#     flange y   -0.20   -0.15    0.00    0.15    0.25    0.40    0.50   0.60
+#     pan        -1.32   -1.32   -0.86    0.09    0.46    0.80    0.93   none
+#     bearing    -0.58   -0.46    0.00    0.46    0.69    0.92    1.02   1.10
+#
+# The two poses this project had already proven -- the old whiskey and cola
+# approaches -- sit at pan 0.079 and -0.335, i.e. within 0.23 rad of their
+# bearing. Everything from y = 0.10 up to y = 0.50 is in that band. Below
+# y = 0, the arm swings a long way past the bearing and folds back on
+# itself, and at y = 0.60 there is no branch left at all.
+#
+# It is not a theoretical concern. A first cut of this bar put the whiskey
+# at flange y = -0.20, pan -1.376. The descent and the run-in both planned
+# and executed, the gripper stalled at 0.0887 rad -- indistinguishable from
+# the 0.0900 the old layout recorded -- and then the bottle slipped straight
+# back out during the lift on one run of two.
+#
+# So every slot a pouring arm has to service is inside this window, and that
+# is why the line is five slots rather than nine.
+APPROACH_WINDOW = (0.10, 0.50)
 
 
 def to_arm(xyz_world, origin, yaw):
@@ -78,11 +181,112 @@ def to_world(xyz_arm, origin, yaw):
 
 # -------------------------------------------------------------- the stations
 
-# World (x, y) on the counter. Must match bar_world.sdf.
-STATIONS = {
-    'beer': (-0.02, 0.21),
-    'opener': (0.45, 0.20),
-}
+# THE BOTTLE LINE. One world x, five slots along y at a fixed pitch.
+#
+# Written as a pitch and an occupant list rather than as five coordinates
+# because the empty slots are the point: they are real, surveyed, reachable
+# positions a bottle can be dropped into, not leftover tabletop. Adding one
+# means naming it here and adding its model to the world file at the y this
+# computes; nothing else on the bar has to move.
+#
+# The line is at world x = 0.08, which is 0.53 in front of each arm. That
+# depth is set from the other end: the side grasp stands off
+# GRIP_AHEAD_OF_TOOL0 + APPROACH_BACKOFF = 0.245 along the arm's +x, so the
+# approach flange lands at 0.285 -- near the 0.305 the old layout's whiskey
+# approach used, which is the depth this project has actually proven.
+#
+# HOW LONG THE LINE CAN BE is APPROACH_WINDOW, not the counter. Arm A can
+# service world y in [-0.30, +0.10] and arm B, facing the other way, [-0.10,
+# +0.30]; the two overlap in the middle, which is how five contiguous slots
+# are all servable by at least one arm. Stretching the line further just adds
+# positions nothing can reach.
+BOTTLE_LINE_X = 0.08
+SLOT_PITCH = 0.15
+BOTTLE_SLOTS = (
+    (-0.30, 'whiskey'),
+    (-0.15, 'cola'),
+    (0.00, 'beer'),
+    (0.15, None),
+    (0.30, None),
+)
+
+# EACH ARM'S OWN WORKING STATION, off the line and out of everyone's way.
+#
+# Arm A's is the glass. Arm B's is the opener's holster. They are not a
+# shared row and it would be wrong to make them one, because the two arms
+# want opposite things from theirs:
+#
+#   The glass has to be FURTHER out than the line (0.65 in arm A's frame).
+#   The pour tilts the bottle about its grip point over the glass, and at
+#   POUR_TILT the bottle lies almost flat with its base 0.30 BEHIND the
+#   glass at a height of 0.18 -- below the 0.3055 top of anything standing
+#   in the line. So the pour sweeps back across the line, and the only thing
+#   that makes that safe is putting the glass off every slot's y. It is at
+#   world y = -0.55, a quarter of a metre clear of the nearest bottle, and
+#   pour_sweep_clearance() is what checks it.
+#
+#   The holster has to be CLOSER in (0.51 in arm B's frame). Arm B picks the
+#   opener by descending vertically onto it from 0.40, and how far out that
+#   descent still works is sharply limited: measured, a holster at 0.67 from
+#   the base could not be descended to at all -- arm B stopped 346mm short
+#   and the goal failed on "arm B could not pick up the opener". 0.51 puts
+#   the flange at 0.365, near the 0.407 the old layout used and proved.
+STATION_GLASS = (0.20, -0.55)
+STATION_OPENER = (0.10, 0.40)
+
+# World (x, y) for everything with a name. The slot table above and the two
+# working stations are the only places a position is decided.
+# Must match bar_world.sdf, which test_layout.py checks model by model.
+STATIONS = dict(
+    [(name, (BOTTLE_LINE_X, y)) for y, name in BOTTLE_SLOTS if name],
+    glass=STATION_GLASS,
+    opener=STATION_OPENER,
+)
+
+
+def slot_y(index):
+    """Locate slot `index`, counted from the middle of the line, on world y.
+
+    The middle slot (0) is the beer's: it is the only one equidistant from
+    the two arms, which is what the two-armed open needs and what nothing
+    else on the bar does.
+    """
+    return index * SLOT_PITCH
+
+
+def free_slots():
+    """List the world (x, y) of every slot a bottle could still be put in."""
+    return [(BOTTLE_LINE_X, y) for y, name in BOTTLE_SLOTS if name is None]
+
+
+def servicing_arms(xy):
+    """Name the arms whose approach window covers a point on the line.
+
+    A slot outside every arm's window is a position on the counter, not a
+    station: nothing can take a bottle off it. See APPROACH_WINDOW for what
+    the window is and how it was measured.
+    """
+    lo, hi = APPROACH_WINDOW
+    here = []
+    for arm, origin, yaw in (('a', ARM_A_ORIGIN, ARM_A_YAW),
+                             ('b', ARM_B_ORIGIN, ARM_B_YAW)):
+        _x, y, _z = to_arm((xy[0], xy[1], COUNTER_Z), origin, yaw)
+        if lo - 1e-9 <= y <= hi + 1e-9:
+            here.append(arm)
+    return here
+
+
+def pour_sweep_clearance():
+    """Give the smallest gap between the pour's sweep and a standing bottle.
+
+    The poured bottle lies back across the line at the glass's y (see
+    STATION_GLASS), at a height below the top of anything standing there, so
+    what keeps them apart is this gap and nothing else. What has to fit in
+    it is the two bottles' envelopes, which is 0.0946 at worst.
+    """
+    return min(abs(y - STATION_GLASS[1])
+               for y, name in BOTTLE_SLOTS if name)
+
 
 # ----------------------------------------------------- beer, cap and opener
 #
@@ -149,11 +353,14 @@ BEER_KEEPOUT_HEIGHT = 0.32
 # start from and as the IK seed, and the taught version belongs to the pour.
 ARM_A_HOME = [0.0, -1.57, 0.0, -1.57, 0.0, 0.0]
 
-# Arm B's, matching the SRDF's 'b_home'. NOT a copy of arm A's: arm B stands
-# across the counter facing back at it, so the same angles would fold it into
-# the worktop. Elbow up and wrist tucked leaves it clear of the counter and
-# of arm A's reach.
-ARM_B_HOME = [0.0, -2.0, 1.6, -1.17, -1.5707963, 0.0]
+# Arm B's, matching the SRDF's 'b_home'. Now literally a copy of arm A's,
+# and that is the point rather than an oversight. The two arms differ by a
+# pure translation along arm A's +y, so the configuration that folds one up
+# clear of the bar folds the other up clear of it too, in the same direction,
+# 0.75 further along. It used to be [0.0, -2.0, 1.6, -1.17, -1.5707963, 0.0]
+# because arm B faced back across a narrower counter from a pedestal and arm
+# A's angles would have driven it into the worktop.
+ARM_B_HOME = list(ARM_A_HOME)
 
 # ------------------------------------------------------------- the grasps
 
@@ -249,11 +456,12 @@ HOLD_LIFT = 0.050
 # the open pads has margin to spare.
 #
 # And it avoids a real failure. A horizontal run-in needs a stand-off pose
-# 100mm back along the arm's own +x, and the beer sits 434mm from arm A: back
-# the 145mm-long gripper off from there and tool0 is 269mm from the base,
-# folded in over the robot's own shoulder. Measured, that pose plans but
-# cannot be descended to -- "beer descend only reached 0.00 of the path".
-# Coming down from above never goes near it.
+# 100mm back along the arm's own +x, and the beer sits 586mm from arm A: back
+# the 145mm-long gripper off from there and tool0 is folded in towards the
+# robot's own shoulder. Measured on the old layout, where the beer was
+# 434mm out and the stand-off landed 269mm from the base, that pose plans
+# but cannot be descended to -- "beer descend only reached 0.00 of the
+# path". Coming down from above never goes near it.
 # Transit height for both arms, above the counter.
 #
 # 0.40, and the 100mm over what looks necessary is the point. A capped beer
@@ -271,29 +479,24 @@ APPROACH_Z = 0.40
 # that matters is not the flange's, it is the lowest point of what is in the
 # fingers -- and the opener hangs a long way down.
 #
-# WHAT WENT WRONG. The opener is gripped OPENER_GRIP_Z (77mm) above its bell
-# rim, so at a flange height of 0.40 the rim is at 0.323. The tallest thing
-# standing on the counter is the cola's pour spout at 0.3055 and the
-# whiskey's at 0.3005, which leaves 17.5mm and 22.5mm. That is thin on its
-# own; what makes it a collision rather than a near miss is that NOTHING
-# STOPS IT. bartender_open's planning scene contains the beer, its stand, the
-# opener station and arm B's pedestal -- it has never contained the whiskey
-# or the cola, so a path straight through either of them validates clean.
+# WHAT WENT WRONG, on the layout this replaced. The opener is gripped
+# OPENER_GRIP_Z (77mm) above its bell rim, so at a flange height of 0.40 the
+# rim is at 0.323. The tallest thing standing on the counter is the cola's
+# pour spout at 0.3055 and the whiskey's at 0.3005, which leaves 17.5mm and
+# 22.5mm. That is thin on its own; what made it a collision rather than a
+# near miss is that NOTHING STOPS IT. bartender_open's planning scene
+# contains the beer, its stand and the opener station -- it has never
+# contained the whiskey or the cola, so a path straight through either of
+# them validates clean.
 #
-# And the first cross-counter move starts far lower than 0.40. The pick lifts
-# the opener PICK_LIFT (50mm) off its post, which puts the rim at 0.050, and
-# the next move is a joint-space swing to over the cap. The opener holster
-# sits 112mm from the whiskey -- sqrt(0.10^2 + 0.05^2) in arm A's frame --
-# so that swing starts with the bell below the whiskey's shoulder and a
-# hand's breadth away from it.
+# And the first cross-counter move starts far lower than 0.40: the pick
+# lifts the opener PICK_LIFT (50mm) off its post, putting the rim at 0.050,
+# and the next move is a joint-space swing to over the cap. On the old
+# layout the holster sat 112mm from the whiskey, so that swing started with
+# the bell below the whiskey's shoulder and a hand's breadth away from it.
 #
-# THE FIX HERE is the height: the opener is raised to OPENER_TRANSIT_Z before
-# it crosses, and comes back to the post from there. That is a guard, not a
-# substitute for the planner knowing about the bottles; see the note in
-# open_action_server._publish_obstacles.
-#
-# MEASURED, same goal run twice from a fresh simulator, watching the bottles'
-# own poses on the pose stream:
+# MEASURED there, same goal run twice from a fresh simulator, watching the
+# bottles' own poses on the pose stream:
 #
 #     flange height    whiskey moved    cola moved
 #     0.40 (old)           71.7mm         11.8mm
@@ -302,6 +505,18 @@ APPROACH_Z = 0.40
 # 71.7mm is not a nudge. The whiskey ended 72mm ABOVE the counter -- the
 # opener hooked it on the way past and carried it, and it was still climbing
 # when the run ended. The cola, 200mm further away, was caught too.
+#
+# THE REDESIGNED BAR TAKES MOST OF THAT AWAY, and the height stays anyway.
+# The holster is now 0.90m from the whiskey and 0.66m from the cola, on the
+# serving strip rather than in among the bottles, and arm B's half of the
+# line is empty -- so the geometry that produced those two numbers is gone.
+# The opener's own crossing, holster to over the beer, clears the nearest
+# bottle by 250mm.
+# What has NOT changed is the reason it was able to happen: the whiskey and
+# the cola are still not in this action's planning scene, so nothing refuses
+# a path through them. OPENER_TRANSIT_Z is the guard that does not depend on
+# where the bottles are, which is exactly why it is worth keeping after
+# moving them. See the note in open_action_server._publish_obstacles.
 
 # Tallest thing standing on the counter, from the counter top. The cola's
 # pour spout. Whiskey 0.3005, capped beer 0.2646 -- both shorter, and this

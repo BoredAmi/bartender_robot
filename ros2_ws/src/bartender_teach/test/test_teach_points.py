@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bartender_teach.point_store import Point, PointStore   # noqa: E402
 from bartender_teach.teach_points import (                  # noqa: E402
     ARMS, ARM_JOINTS, MAX_JOG_DEG, MAX_JOG_MM, Pendant,
+)
+from bartender_teach.tool_frames import (                   # noqa: E402,I100
     quat_about, quat_mul, quat_rotate,
 )
 
@@ -421,7 +423,7 @@ def test_an_unknown_arm_is_refused_and_changes_nothing(pendant):
 def test_arm_b_plans_in_its_own_base_frame(pendant):
     """b_base_link, not base_link.
 
-    The arms are 0.55 x 0.62 apart, so a Cartesian jog sent in the wrong
+    The arms are 1.06 x 0.80 apart, so a Cartesian jog sent in the wrong
     frame lands most of a metre away. This is the mistake the Arm record
     exists to make impossible.
     """
@@ -473,3 +475,320 @@ def test_list_shows_both_arms_points(tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'a_point' in out and 'b_point' in out
     assert 'arm A' in out and 'arm B' in out
+
+
+# -- record mode ------------------------------------------------------------
+#
+# The mode exists so that a sequence gets built out of the teaching somebody
+# was doing anyway. So what these check is mostly about what does and does not
+# become a step: a pipeline that quietly recorded the wrong things would be
+# worse than no pipeline, because it looks like a plan.
+
+def test_recording_starts_empty_and_is_in_the_file_at_once(pendant):
+    """Persisted from the start, like a point: a session cannot be redone."""
+    pendant.dispatch('record pour_v2')
+    assert pendant.recording is not None
+    assert 'pour_v2' in PointStore.load(pendant.store.path).pipelines
+
+
+def test_saving_a_point_while_recording_appends_a_goto(pendant):
+    pendant.dispatch('record pour_v2')
+    pendant.dispatch('save whiskey_grip')
+    assert [s.describe() for s in pendant.recording.steps] == \
+        ['goto whiskey_grip']
+
+
+def test_saving_without_a_name_auto_names_after_the_pipeline(pendant):
+    """Jog, save, jog, save -- naming every waypoint is work for nothing."""
+    pendant.dispatch('record pour_v2')
+    pendant.dispatch('save')
+    pendant.dispatch('save')
+    assert 'pour_v2_01' in pendant.store
+    assert 'pour_v2_02' in pendant.store
+    assert pendant.recording.point_names() == ['pour_v2_01', 'pour_v2_02']
+
+
+def test_auto_naming_skips_a_name_already_taken(pendant):
+    """Re-recording must not redefine the points the old one still runs on."""
+    pendant.store.add(Point('pour_v2_01', dict(zip(ARM_A.joints, [0.4] * 6))))
+    pendant.dispatch('record pour_v2')
+    pendant.dispatch('save')
+    assert pendant.recording.point_names() == ['pour_v2_02']
+    assert pendant.store.get('pour_v2_01').joints[ARM_A.joints[0]] == 0.4
+
+
+def test_saving_without_a_name_is_still_refused_when_not_recording(pendant):
+    pendant.dispatch('save')
+    assert not len(pendant.store)
+
+
+def test_a_jog_never_becomes_a_step(pendant):
+    """A relative move cannot replay -- see the pipelines module docstring."""
+    pendant.dispatch('record pour_v2')
+    pendant.dispatch('jog z 20')
+    pendant.dispatch('jog j1 5')
+    assert len(pendant.recording) == 0
+
+
+def test_the_gripper_commands_become_steps_carrying_their_arm(pendant):
+    pendant.dispatch('record grab')
+    pendant.dispatch('close 0.3')
+    pendant.dispatch('open')
+    assert [(s.kind, s.arg, s.arm) for s in pendant.recording.steps] == \
+        [('grip', 0.3, 'a'), ('grip', 0.0, 'a')]
+
+
+def test_a_gripper_step_records_the_selected_arm_not_the_default(tmp_path):
+    p = Pendant(FakeNode(), PointStore(str(tmp_path / 'p.yaml')))
+    p.dispatch('arm b')
+    p.dispatch('record grab')
+    p.dispatch('close 0.3')
+    assert p.recording.steps[0].arm == 'b'
+
+
+def test_going_to_an_existing_point_appends_a_step(tmp_path):
+    store = PointStore(str(tmp_path / 'p.yaml'))
+    store.add(Point('home', dict(zip(ARM_A.joints, [0.0] * 6)),
+                    group=ARM_A.group))
+    p = Pendant(FakeNode(), store)
+    p.dispatch('record tidy')
+    p.dispatch('goto home')
+    assert p.recording.point_names() == ['home']
+
+
+def test_a_move_that_failed_does_not_become_a_step(tmp_path):
+    """A recorded failure is a pipeline known not to work on its first run."""
+    class Refuses(FakeNode):
+        def move_to_joints(self, positions, label='', arm=ARM_A):
+            return False, 'no plan'
+
+    store = PointStore(str(tmp_path / 'p.yaml'))
+    store.add(Point('home', dict(zip(ARM_A.joints, [0.0] * 6)),
+                    group=ARM_A.group))
+    p = Pendant(Refuses(), store)
+    p.dispatch('record tidy')
+    p.dispatch('goto home')
+    assert len(p.recording) == 0
+
+
+def test_a_second_record_is_refused_while_one_is_open(pendant):
+    """Two at once would put every step into both."""
+    pendant.dispatch('record one')
+    pendant.dispatch('record two')
+    assert pendant.recording.name == 'one'
+    assert 'two' not in pendant.store.pipelines
+
+
+def test_recording_over_an_existing_name_is_refused(pendant):
+    pendant.dispatch('record one')
+    pendant.dispatch('save')
+    pendant.dispatch('stop')
+    pendant.dispatch('record one')
+    assert pendant.recording is None
+    assert len(pendant.store.pipelines['one']) == 1
+
+
+def test_stop_discards_a_pipeline_that_recorded_nothing(pendant):
+    """Clutter, not data -- and it would block re-recording the name."""
+    pendant.dispatch('record empty')
+    pendant.dispatch('stop')
+    assert pendant.store.pipelines == {}
+    assert pendant.recording is None
+
+
+def test_stop_when_not_recording_says_so_rather_than_crashing(pendant):
+    pendant.dispatch('stop')
+    assert pendant.recording is None
+
+
+def test_steps_survive_to_disk_as_they_are_recorded(pendant):
+    """Not written on stop: a crash mid-session must not lose the order."""
+    pendant.dispatch('record pour_v2')
+    pendant.dispatch('save')
+    pendant.dispatch('close 0.3')
+    reloaded = PointStore.load(pendant.store.path).pipelines['pour_v2']
+    assert [s.describe() for s in reloaded.steps] == \
+        ['goto pour_v2_01', 'grip 0.300 (arm a)']
+
+
+def test_dropping_removes_the_last_step_by_default(pendant):
+    pendant.dispatch('record p')
+    pendant.dispatch('save')
+    pendant.dispatch('close 0.3')
+    pendant.dispatch('pipeline drop')
+    assert [s.kind for s in pendant.recording.steps] == ['goto']
+
+
+def test_dropping_a_numbered_step_removes_that_one(pendant):
+    pendant.dispatch('record p')
+    pendant.dispatch('save')
+    pendant.dispatch('close 0.3')
+    pendant.dispatch('pipeline drop 1')
+    assert [s.kind for s in pendant.recording.steps] == ['grip']
+
+
+def test_dropping_out_of_range_is_refused(pendant):
+    pendant.dispatch('record p')
+    pendant.dispatch('save')
+    pendant.dispatch('pipeline drop 9')
+    assert len(pendant.recording) == 1
+
+
+def test_a_hand_added_goto_to_a_missing_point_is_refused(pendant):
+    pendant.dispatch('record p')
+    pendant.dispatch('pipeline step goto nowhere')
+    assert len(pendant.recording) == 0
+
+
+def test_a_hand_added_wait_is_appended(pendant):
+    pendant.dispatch('record p')
+    pendant.dispatch('pipeline step wait 0.5 settle')
+    assert pendant.recording.steps[0].describe() == 'wait 0.5s  -- settle'
+
+
+# -- replay -----------------------------------------------------------------
+
+def _recorded(pendant):
+    """Record a two-point, one-grip pipeline and return the node it used."""
+    pendant.dispatch('record demo')
+    pendant.dispatch('save')
+    pendant.dispatch('close 0.3')
+    pendant.dispatch('save')
+    pendant.dispatch('stop')
+    return pendant
+
+
+def test_running_replays_every_step_in_order(pendant):
+    _recorded(pendant)
+    pendant.node.joint_moves.clear()
+    pendant.node.gripper.clear()
+    pendant.dispatch('run demo')
+    assert len(pendant.node.joint_moves) == 2
+    assert pendant.node.gripper == [0.3]
+
+
+def test_a_dry_run_moves_nothing(pendant):
+    _recorded(pendant)
+    pendant.node.joint_moves.clear()
+    pendant.node.gripper.clear()
+    pendant.dispatch('run demo dry')
+    assert pendant.node.joint_moves == [] and pendant.node.gripper == []
+
+
+def test_running_stops_at_the_first_failure(tmp_path):
+    """Carrying on past a failed move drives the rest from the wrong place.
+
+    The failing move is deliberately NOT the last step: a pipeline that
+    stopped only because it had run out of steps would pass a test that
+    merely counted them.
+    """
+    class FailsSecondMove(FakeNode):
+        def move_to_joints(self, positions, label='', arm=ARM_A):
+            self.joint_moves.append(dict(positions))
+            return len(self.joint_moves) < 2, 'no plan'
+
+    p = Pendant(FailsSecondMove(), PointStore(str(tmp_path / 'p.yaml')))
+    # goto, grip, goto(fails), grip -- the trailing grip must not happen.
+    p.dispatch('record demo')
+    p.dispatch('save')
+    p.dispatch('close 0.3')
+    p.dispatch('save')
+    p.dispatch('open')
+    p.dispatch('stop')
+    assert [s.kind for s in p.store.pipelines['demo'].steps] == \
+        ['goto', 'grip', 'goto', 'grip']
+
+    p.node.joint_moves.clear()
+    p.node.gripper.clear()
+    p.dispatch('run demo')
+    assert len(p.node.joint_moves) == 2      # stopped on the second move
+    assert p.node.gripper == [0.3]           # the grip AFTER it never ran
+
+
+def test_running_while_recording_is_refused(pendant):
+    """The replay would be appended to the pipeline being recorded."""
+    _recorded(pendant)
+    pendant.dispatch('record another')
+    pendant.node.joint_moves.clear()
+    pendant.dispatch('run demo')
+    assert pendant.node.joint_moves == []
+
+
+def test_running_is_refused_when_a_point_has_been_deleted(pendant):
+    """Checked before anything moves, not at step 9 of 11."""
+    _recorded(pendant)
+    pendant.dispatch('rm demo_01')
+    pendant.node.joint_moves.clear()
+    pendant.dispatch('run demo')
+    assert pendant.node.joint_moves == []
+
+
+def test_running_an_unknown_pipeline_says_which_exist(pendant, capsys):
+    _recorded(pendant)
+    capsys.readouterr()
+    pendant.dispatch('run nope')
+    assert 'demo' in capsys.readouterr().out
+
+
+def test_a_grip_step_drives_the_arm_it_recorded(tmp_path):
+    """Not the selected one: the other arm may be holding the bottle."""
+    p = Pendant(FakeNode(), PointStore(str(tmp_path / 'p.yaml')))
+    p.dispatch('arm b')
+    p.dispatch('record grab')
+    p.dispatch('close 0.3')
+    p.dispatch('stop')
+    p.dispatch('arm a')
+    p.dispatch('run grab')
+    assert p.node.arms_gripped[-1] == 'b'
+
+
+def test_a_goto_step_drives_the_arm_the_point_was_taught_on(tmp_path):
+    store = PointStore(str(tmp_path / 'p.yaml'))
+    store.add(Point('b_spot', dict(zip(ARM_B.joints, [0.2] * 6)),
+                    group=ARM_B.group))
+    p = Pendant(FakeNode(), store)
+    p.dispatch('record go')
+    p.dispatch('goto b_spot')
+    p.dispatch('stop')
+    p.dispatch('run go')
+    assert p.node.arms_moved[-1] == 'b'
+
+
+def test_a_wait_step_does_not_move_anything(pendant):
+    pendant.dispatch('record pause')
+    pendant.dispatch('pipeline step wait 0')
+    pendant.dispatch('stop')
+    pendant.dispatch('run pause')
+    assert pendant.node.joint_moves == [] and pendant.node.gripper == []
+
+
+# -- listing and export -----------------------------------------------------
+
+def test_pipeline_list_names_the_one_being_recorded(pendant, capsys):
+    pendant.dispatch('record live')
+    pendant.dispatch('save')
+    capsys.readouterr()
+    pendant.dispatch('pipeline')
+    assert 'recording' in capsys.readouterr().out
+
+
+def test_removing_the_pipeline_being_recorded_is_refused(pendant):
+    pendant.dispatch('record live')
+    pendant.dispatch('save')
+    pendant.dispatch('pipeline rm live')
+    assert 'live' in pendant.store.pipelines
+
+
+def test_export_prints_a_python_literal_of_the_steps(pendant, capsys):
+    _recorded(pendant)
+    capsys.readouterr()
+    pendant.dispatch('pipeline export demo')
+    out = capsys.readouterr().out
+    assert 'DEMO = [' in out
+    assert "('goto', 'demo_01')," in out
+    assert "('grip', 0.3000, 'a')," in out
+
+
+def test_an_unknown_pipeline_subcommand_is_refused(pendant, capsys):
+    pendant.dispatch('pipeline frobnicate')
+    assert 'frobnicate' in capsys.readouterr().out

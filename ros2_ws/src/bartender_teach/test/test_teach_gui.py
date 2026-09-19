@@ -327,3 +327,69 @@ def test_points_are_tagged_with_their_own_arm(tmp_path):
                     group=ARM_B.group))
     s = Bridge(GuiFakeNode(), store).state()
     assert s['points'] == [{'name': 'b_rest', 'note': '', 'arm': 'b'}]
+
+
+# -- pipelines in the page --------------------------------------------------
+#
+# The page must not become a second place that decides how a step reads, or
+# the terminal and the browser start describing the same pipeline
+# differently. So the bridge sends rendered lines, and these check that it
+# sends them at all and that it says when recording is on -- a mode you
+# cannot see is a mode you forget you left running.
+
+def test_state_reports_no_pipelines_on_a_fresh_file(bridge):
+    s = bridge.state()
+    assert s['pipelines'] == [] and s['recording'] is None
+
+
+def test_state_names_the_pipeline_being_recorded(bridge):
+    bridge.run('record demo')
+    assert bridge.state()['recording'] == 'demo'
+
+
+def test_state_stops_reporting_a_recording_once_stopped(bridge):
+    bridge.run('record demo')
+    bridge.run('save here')
+    bridge.run('stop')
+    assert bridge.state()['recording'] is None
+
+
+def test_state_carries_each_pipelines_rendered_steps(bridge):
+    bridge.run('record demo')
+    bridge.run('save here')
+    bridge.run('close 0.3')
+    bridge.run('stop')
+    [p] = bridge.state()['pipelines']
+    assert p['name'] == 'demo'
+    assert p['steps'] == ['goto here', 'grip 0.300 (arm a)']
+    assert p['missing'] == []
+
+
+def test_state_flags_a_pipeline_whose_point_has_gone(bridge):
+    """The page disables Run on these, so it has to be told."""
+    bridge.run('record demo')
+    bridge.run('save here')
+    bridge.run('stop')
+    bridge.run('rm here')
+    [p] = bridge.state()['pipelines']
+    assert p['missing'] == ['here']
+
+
+def test_state_with_pipelines_is_json_serialisable(bridge):
+    bridge.run('record demo')
+    bridge.run('save here')
+    json.dumps(bridge.state())
+
+
+def test_the_page_has_somewhere_to_show_pipelines(bridge):
+    """The painter writes into these ids; a rename would blank the panel."""
+    for marker in ('id="pipelines"', 'id="rec"', 'id="recstop"',
+                   'id="reclive"', 'id="recidle"'):
+        assert marker in PAGE
+
+
+def test_the_page_records_through_the_same_commands_the_terminal_takes(bridge):
+    """The GUI owns no robot logic: every control is a pendant command."""
+    for command in ("run('record '", "run('stop')", "run('save')",
+                    "run('wait 1')"):
+        assert command in PAGE

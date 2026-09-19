@@ -201,6 +201,25 @@ PAGE = r"""<!DOCTYPE html>
   </section>
 
   <section>
+    <h2>Pipelines</h2>
+    <div class="row" id="recidle">
+      <input type="text" id="plname" placeholder="pipeline name">
+      <button class="go" id="rec">Record</button>
+    </div>
+    <div class="row" id="reclive" hidden>
+      <button id="recsave" style="flex:1">Save point + step</button>
+      <button id="recwait">Wait 1s</button>
+      <button class="danger" id="recstop">Stop</button>
+    </div>
+    <div class="hint" id="rechint">
+      While recording, saving a point, going to one and the gripper buttons
+      each append a step. Jogs do not - they are how you reach a point, and a
+      relative move cannot be replayed.
+    </div>
+    <div id="pipelines"></div>
+  </section>
+
+  <section>
     <h2>Log</h2>
     <pre id="log"></pre>
     <div class="row" style="margin-top:8px">
@@ -309,6 +328,19 @@ function saveWith(verb) {
 }
 $('#save').onclick = () => saveWith('save');
 $('#resave').onclick = () => saveWith('resave');
+
+$('#rec').onclick = () => {
+  const n = $('#plname').value.trim();
+  if (!n) { appendLog('  give the pipeline a name first'); return; }
+  run('record ' + JSON.stringify(n));
+  $('#plname').value = '';
+};
+$('#recstop').onclick = () => run('stop');
+$('#recwait').onclick = () => run('wait 1');
+// Bare `save`, with no name: the pendant auto-names it after the pipeline.
+// That is the whole point of the mode -- jog, press, jog, press -- and
+// making the page demand a name would put the work straight back.
+$('#recsave').onclick = () => run('save');
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || busy) return;
@@ -423,6 +455,60 @@ function paint(s) {
     $('#points').append(d);
   });
 
+  paintPipelines(s, dis);
+}
+
+function paintPipelines(s, dis) {
+  const rec = s.recording;
+  // The two rows are mutually exclusive rather than one row that changes
+  // labels: the controls you want while recording are not the ones you want
+  // before it, and a button that means something different depending on a
+  // mode is how the wrong one gets pressed.
+  $('#recidle').hidden = !!rec;
+  $('#reclive').hidden = !rec;
+  $('#rechint').textContent = rec
+    ? `Recording "${rec}". Save, Go and the gripper buttons each append a step.`
+    : 'Name a pipeline and press Record. What you teach becomes its steps.';
+
+  $('#pipelines').innerHTML = s.pipelines.length
+    ? '' : '<div class="empty">none yet</div>';
+  s.pipelines.forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'pt';
+    const live = p.name === rec
+      ? ' <span class="note">recording</span>' : '';
+    const warn = p.missing.length
+      ? `<div class="note">missing points: ${esc(p.missing.join(', '))}</div>`
+      : '';
+    d.innerHTML =
+      `<div class="top"><span class="nm">${esc(p.name)}</span>` +
+      `<span class="note">${p.steps.length} step(s)</span>${live}</div>` +
+      (p.note ? `<div class="note">${esc(p.note)}</div>` : '') + warn +
+      `<div class="note">` +
+      p.steps.map((t, i) => `${i + 1}. ${esc(t)}`).join('<br>') + `</div>`;
+    const go = document.createElement('button');
+    go.textContent = 'Run'; go.className = 'go';
+    // Never runnable while recording: the replay would be appended to the
+    // pipeline being recorded, step by step. The pendant refuses this too;
+    // the button is disabled so it does not have to.
+    go.disabled = dis || !!rec || p.missing.length > 0;
+    go.onclick = () => {
+      if (confirm(`Run "${p.name}"? ${p.steps.length} step(s), the robot moves.`))
+        run('run ' + JSON.stringify(p.name));
+    };
+    const dry = document.createElement('button');
+    dry.textContent = 'Dry run'; dry.disabled = dis || !!rec;
+    dry.onclick = () => run('run ' + JSON.stringify(p.name) + ' dry');
+    const del = document.createElement('button');
+    del.textContent = 'Delete'; del.className = 'danger';
+    del.disabled = dis || p.name === rec;
+    del.onclick = () => {
+      if (confirm(`Delete pipeline "${p.name}"?`))
+        run('pipeline rm ' + JSON.stringify(p.name));
+    };
+    d.querySelector('.top').append(go, dry, del);
+    $('#pipelines').append(d);
+  });
 }
 
 async function poll() {

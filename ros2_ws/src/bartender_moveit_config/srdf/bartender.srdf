@@ -70,12 +70,18 @@
        angles would fold it into the counter. Elbow up and wrist tucked
        leaves it clear of the whole worktop and of arm A's reach, which is
        where it has to be able to sit while arm A pours. -->
+  <!-- The same angles as `home`, which is only true because the two arms
+       are parallel: they sit side by side on the same bar top, 0.75 apart
+       along arm A's +y, same height and same yaw. b_home used to be
+       -2.0 / 1.6 / -1.17 / -1.5707963 because arm B faced back across a
+       narrower counter from a pedestal and arm A's angles would have folded
+       it into the worktop. -->
   <group_state name="b_home" group="b_ur_manipulator">
     <joint name="b_shoulder_pan_joint" value="0.0"/>
-    <joint name="b_shoulder_lift_joint" value="-2.0"/>
-    <joint name="b_elbow_joint" value="1.6"/>
-    <joint name="b_wrist_1_joint" value="-1.17"/>
-    <joint name="b_wrist_2_joint" value="-1.5707963"/>
+    <joint name="b_shoulder_lift_joint" value="-1.57"/>
+    <joint name="b_elbow_joint" value="0.0"/>
+    <joint name="b_wrist_1_joint" value="-1.57"/>
+    <joint name="b_wrist_2_joint" value="0.0"/>
     <joint name="b_wrist_3_joint" value="0.0"/>
   </group_state>
 

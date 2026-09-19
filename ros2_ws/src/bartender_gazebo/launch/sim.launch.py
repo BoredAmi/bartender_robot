@@ -92,7 +92,13 @@ def generate_launch_description():
         arguments=[
             '-topic', 'robot_description',
             '-name', 'bartender_ur5e',
-            '-x', '-0.4', '-y', '0.0', '-z', '0.9',
+            # Arm A's base, and therefore the origin of base_link, the
+            # frame bartender_pour plans everything in. On the bar top
+            # (z=0.9), at one end of the bar and 0.40 off its centreline.
+            # Arm B stands 1.06 down the bar and 0.80 across, turned to
+            # face back at arm A; the description states that relative to
+            # this point. See the bar layout block in worlds/bar_world.sdf.
+            '-x', '-0.45', '-y', '-0.40', '-z', '0.9',
         ],
         output='screen',
     )

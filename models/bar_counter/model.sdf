@@ -4,13 +4,23 @@
     <static>true</static>
     <!-- Link origin is the center of the counter's top surface, so placing
          the model at z=0 in the world puts the tabletop at world z=0 and
-         everything standing on it (robot base, bottle, glass) at z=0. -->
+         everything standing on it (both robot bases, the bottles and the
+         glass) at z=0.
+
+         1.76 x 1.6, where it used to be 1.2 x 0.6. The size is not a
+         style choice: BOTH arms are bolted to this top now, facing each
+         other down the length of it, where arm B used to stand beside a
+         smaller counter on its own pedestal. Between them runs a five-slot
+         bottle line, with each arm's own working station off to its side.
+         bartender_open/layout.py lays out what has to fit and
+         test_layout.py checks this box still contains all of it with a
+         margin. -->
     <link name="counter_link">
       <visual name="counter_visual">
         <pose>0 0 -0.45 0 0 0</pose>
         <geometry>
           <box>
-            <size>1.2 0.6 0.9</size>
+            <size>1.76 1.6 0.9</size>
           </box>
         </geometry>
         <material>
@@ -24,7 +34,7 @@
         <pose>0 0 -0.45 0 0 0</pose>
         <geometry>
           <box>
-            <size>1.2 0.6 0.9</size>
+            <size>1.76 1.6 0.9</size>
           </box>
         </geometry>
         <surface>

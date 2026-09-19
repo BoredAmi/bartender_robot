@@ -62,10 +62,20 @@ def open_fallbacks():
     if not (os.path.exists(OPENER) and os.path.exists(LAYOUT)):
         return {}
     consts = {}
+    layout = open(LAYOUT).read()
     for name, literal in re.findall(
-            r'^(ARM_[AB]_HOME)\s*=\s*(\[[^\]]*\])',
-            open(LAYOUT).read(), re.M):
+            r'^(ARM_[AB]_HOME)\s*=\s*(\[[^\]]*\])', layout, re.M):
         consts[name] = ast.literal_eval(literal)
+    # One arm's rest pose may be written as a copy of the other's, which is
+    # what it is now that the arms are parallel: ARM_B_HOME = list(ARM_A_HOME).
+    # Resolve that rather than skipping it -- an unresolved name drops the
+    # point out of `found` below, and the test then passes by checking
+    # nothing, which is how arm B's home went unguarded the first time.
+    for name, alias in re.findall(
+            r'^(ARM_[AB]_HOME)\s*=\s*(?:list\()?(ARM_[AB]_HOME)\)?\s*$',
+            layout, re.M):
+        if alias in consts:
+            consts[name] = list(consts[alias])
     found = {}
     for point, prefix, const in re.findall(
             r"_taught\(\s*'([a-z_]+)'\s*,\s*'([a-z_]*)'\s*,\s*L\.(\w+)\s*\)",

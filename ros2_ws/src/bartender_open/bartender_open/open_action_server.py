@@ -145,6 +145,12 @@ DETACH_TOPIC = '/beer/cap/detach'
 POSE_TOPIC = '/world/bar_world/dynamic_pose/info'
 
 # Gazebo model names, as they appear on POSE_TOPIC.
+# How thick the bar top is modelled as in the planning scene: the full
+# height of the counter, hanging below its top face. Same box
+# bartender_pour's COUNTER_BOX describes, and the same 0.9 the model.sdf
+# gives it, so the two agree by construction rather than by luck.
+COUNTER_THICKNESS = 0.90
+
 BEER_MODEL = 'beer_bottle'
 CAP_MODEL = 'beer_cap'
 OPENER_MODEL = 'bottle_opener'
@@ -466,24 +472,54 @@ class OpenActionServer(Node):
     def _publish_obstacles(self) -> bool:
         """Add what this action needs to the scene, without disturbing the rest.
 
-        is_diff, and the object ids for the counter, bottles, glass and their
-        stands are NOT repeated here: bartender_pour publishes those at the
-        start of every pour goal and re-sending them from a second node would
-        mean two places deciding where the counter is. What this adds is the
-        four things only this action knows about -- the beer, its stand, the
-        opener's holster and arm B's pedestal.
+        is_diff, so this adds to whatever is already there rather than
+        replacing it.
+
+        THE COUNTER IS PUBLISHED HERE, and it did not use to be. The
+        argument for leaving it out was that bartender_pour publishes it at
+        the start of every pour goal, and re-sending it from a second node
+        would mean two places deciding where the counter is. That was wrong
+        twice over. An open goal on a freshly started stack runs with no
+        pour behind it, so the counter was simply absent -- and MoveIt plans
+        happily through a worktop nobody has told it about.
+
+        It is not hypothetical and it is not subtle. Traced on the
+        redesigned bar, arm B reached for the opener through the bar: the
+        configuration it picked put the forearm 236mm BELOW the counter top
+        and the wrist 41mm below, which left the gripper inside the
+        worktop's collision geometry where its fingers could not close at
+        all. The goal failed as "fingers closed all the way without meeting
+        anything 24.0mm wide", which is an honest report of a gripper jammed
+        in a table. The old layout never showed it only because the holster
+        happened to sit where the branch above the counter was also the
+        nearest one.
+
+        The duplication argument no longer applies either: the counter's
+        size and pose are decided in layout.py, bartender_pour restates them
+        in arm A's frame from the same source, and test_layout.py checks the
+        two agree. Both nodes publish the same box under the same object id,
+        so whichever runs first wins and the second is a no-op.
+
+        The rest of what this adds is the three things only this action
+        knows about: the beer, its stand and the opener's holster. There
+        used to be a fourth, a box for arm B's pedestal; arm B stands on the
+        bar top now, so there is no pedestal and the volume under it is
+        inside the counter box.
 
         WHAT IS NOT IN HERE, and should be: the whiskey and the cola. They
-        stand on the same counter, the whiskey 112mm from the opener's
-        holster and 300mm tall, and no part of this action tells the planner
-        they exist -- so a path straight through either of them is accepted
-        as valid. That is why the opener climbs to OPENER_TRANSIT_Z before it
-        crosses (see layout.py): the height is what keeps it off them, and
-        the height is a guard rather than a fix. Adding them here is the
-        fix, and it is not done yet because they sit right where arm B
-        reaches for the opener and the pick has not been re-measured with
-        them in the scene -- an obstacle that makes the pick unplannable
-        would be a worse bug than the one it closes.
+        stand on the same counter, 300mm tall, and no part of this action
+        tells the planner they exist -- so a path straight through either of
+        them is accepted as valid. On the old layout that was a live bug:
+        the holster sat 112mm from the whiskey and the carried opener hooked
+        it, 71.7mm of it, on the way past. The redesigned bar puts the
+        holster 0.90m away on a different row, and the opener's crossing now
+        clears the nearest bottle by 250mm, so the bug has no geometry left
+        to bite on -- but the hole in the scene is still a hole, and the
+        thing keeping the opener off the bottles is still OPENER_TRANSIT_Z
+        rather than the planner. Adding them here is the fix. It is not done
+        yet for the reason it never was: an obstacle that makes arm B's pick
+        unplannable would be a worse bug than the one it closes, and that
+        has not been measured on the new layout.
 
         The beer's object is a keep-out volume rather than the bottle's own
         shape; see BEER_KEEPOUT_RADIUS in layout.py for why, and for why its
@@ -497,10 +533,21 @@ class OpenActionServer(Node):
 
         beer = L.station_in_arm('beer', 'a')
         opener = L.station_in_arm('opener', 'a')
-        pedestal = (L.ARM_B_IN_A[0], L.ARM_B_IN_A[1], -0.45)
+
+        counter = L.to_arm((L.COUNTER_CENTRE[0], L.COUNTER_CENTRE[1],
+                            L.COUNTER_Z - COUNTER_THICKNESS / 2.0),
+                           L.ARM_A_ORIGIN, L.ARM_A_YAW)
 
         scene = PlanningScene()
         scene.world.collision_objects = [
+            # Same id and same box bartender_pour publishes, from the same
+            # numbers. Whichever node gets there first wins.
+            self._obj('bar_counter',
+                      SolidPrimitive(type=SolidPrimitive.BOX,
+                                     dimensions=[L.COUNTER_SIZE[0],
+                                                 L.COUNTER_SIZE[1],
+                                                 COUNTER_THICKNESS]),
+                      counter),
             self._obj('beer_bottle',
                       self._cyl(L.BEER_KEEPOUT_HEIGHT, L.BEER_KEEPOUT_RADIUS),
                       (beer[0], beer[1], L.BEER_KEEPOUT_HEIGHT / 2.0)),
@@ -515,10 +562,6 @@ class OpenActionServer(Node):
                                 L.BELL_OUTER_RADIUS),
                       (opener[0], opener[1],
                        (L.OPENER_REST_RIM_Z + L.OPENER_HEIGHT) / 2.0)),
-            self._obj('arm_b_pedestal',
-                      SolidPrimitive(type=SolidPrimitive.BOX,
-                                     dimensions=[0.30, 0.30, 0.90]),
-                      pedestal),
         ]
         return self._apply(scene.world.collision_objects)
 

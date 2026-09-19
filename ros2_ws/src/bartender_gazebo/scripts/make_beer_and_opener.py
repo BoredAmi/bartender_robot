@@ -321,14 +321,6 @@ def opener_height():
     return bell_height() + PLATE_THICKNESS + SHAFT_LENGTH
 
 
-def plate_underside():
-    """Return the local z of the face that lands on the cap.
-
-    The descent stops here.
-    """
-    return bell_height()
-
-
 def seated_rim_z(cap_top_z):
     """Return the rim's world z with the opener pressed fully home.
 

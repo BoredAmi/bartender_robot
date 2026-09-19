@@ -35,16 +35,20 @@ WORLD = os.path.join(REPO, 'ros2_ws', 'src', 'bartender_gazebo', 'worlds',
                      'bar_world.sdf')
 MODELS = os.path.join(REPO, 'models')
 
-# Where each stand belongs, and which bottle it is for. The world places both
-# at their bottle's own station, which is the whole point -- a stand offset
-# from its bottle is a stand the bottle is lowered onto the rim of.
-# The beer_stand is deliberately absent: its station is decided by
-# bartender_open's layout and checked by that package's test_layout.py,
-# against the same world file. Listing it here as well would be a second
-# place to update.
+# Which bottle each stand belongs to. The world places both at their
+# bottle's own station, which is the whole point -- a stand offset from its
+# bottle is a stand the bottle is lowered onto the rim of.
+#
+# Deliberately no coordinates. WHERE the stations are is decided in
+# bartender_open/layout.py and checked model by model against this same
+# world file by that package's test_layout.py; a second copy here would be
+# a second place to update, and it was exactly that -- it still named the
+# pre-redesign (0.15, 0.15) long after the bottles had moved, and nothing
+# noticed because nothing read it. The beer_stand is absent for the same
+# reason it always was.
 STATIONS = {
-    'whiskey_stand': ('jack_daniels_bottle', (0.15, 0.15)),
-    'cola_stand': ('cola_bottle', (0.35, 0.0)),
+    'whiskey_stand': 'jack_daniels_bottle',
+    'cola_stand': 'cola_bottle',
 }
 
 
@@ -278,7 +282,7 @@ def _world_poses():
 
 @pytest.mark.parametrize('stand_name', sorted(STATIONS))
 def test_stand_is_placed_on_its_bottle_station(stand_name):
-    bottle_name, _ = STATIONS[stand_name]
+    bottle_name = STATIONS[stand_name]
     poses = _world_poses()
     assert stand_name in poses, f'{stand_name} is not in the world'
     assert poses[stand_name][:3] == pytest.approx(poses[bottle_name][:3])

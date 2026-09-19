@@ -130,6 +130,22 @@ class Bridge:
                         'note': self.store.get(n).note,
                         'arm': self._arm_key(n)}
                        for n in self.store.names()],
+            # The pipeline being recorded, or None. The page needs this to
+            # show that saving a point is currently doing a second thing as
+            # well -- a record mode you cannot see is a record mode you
+            # forget you left on.
+            'recording': (None if self.pendant.recording is None
+                          else self.pendant.recording.name),
+            'pipelines': [
+                {'name': n,
+                 'note': self.store.pipelines[n].note,
+                 'steps': [st.describe()
+                           for st in self.store.pipelines[n].steps],
+                 # Rendered rather than the raw fields, because the page
+                 # should not be a second place that decides how a step
+                 # reads. describe() is what the terminal prints too.
+                 'missing': self.store.pipelines[n].missing_points(self.store)}
+                for n in sorted(self.store.pipelines)],
         }
 
     def _arm_key(self, name):

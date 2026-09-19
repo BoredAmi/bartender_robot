@@ -81,32 +81,87 @@
       </link>
     </model>
 
-    <!-- Counter top surface is at world z = 0.9 (legs stand on the ground
-         plane at z=0); robot base, bottle, and glass all sit at that height. -->
+    <!-- ===================== THE BAR TOP =====================
+
+         Counter top surface is at world z = 0.9 (legs stand on the ground
+         plane at z=0). BOTH robot bases and everything standing on the top
+         are at that height, which is the coincidence the whole layout is
+         built on: a z in either arm's frame is "height above the counter".
+
+         The top is 1.76 (x) by 1.6 (y) centred at (0.08, 0), so it runs
+         x -0.80..0.96 and y -0.80..0.80. It used to be 1.2 by 0.6 with arm
+         B standing beside it on its own pedestal; the pedestal is gone and
+         both arms are bolted to this top, which is most of why it grew.
+
+         WHAT IS ON IT. Every number here is restated in
+         bartender_open/layout.py, which derives the slots from a pitch
+         rather than listing them, and test_layout.py compares the two file
+         against file.
+
+           the arms      A at (-0.45, -0.40) facing +x, B at (0.61, 0.40)
+                         facing -x. They FACE EACH OTHER down the bar with
+                         the bottle line between them. Arm B's yaw is the
+                         one number here that took measuring rather than
+                         choosing; layout.APPROACH_WINDOW has the table of
+                         readings and the reason.
+
+           bottle line   x = 0.08, i.e. 0.53 in front of each arm. Five
+                         slots at a 0.15 pitch, y = -0.30 to +0.30. Three
+                         are filled (whiskey, cola, beer) and two are free
+                         for whatever gets added next: that should cost a
+                         slot and a station name, not a re-survey.
+
+                         The line runs ACROSS each arm's approach, not
+                         along it, and that is the point of a line here.
+                         bartender_pour grasps from the side, running in
+                         along the arm's own +x, so slots at a common x each
+                         get a clear lane and no bottle stands behind
+                         another.
+
+                         It is five slots and not nine because of
+                         APPROACH_WINDOW: past y = +0.10 arm A can no longer
+                         take a bottle off the line in a pose that holds,
+                         and arm B picks up from y = -0.10 the other way.
+                         Slots outside both windows would be tabletop, not
+                         stations.
+
+           the glass     (0.20, -0.55), arm A's own station, further out
+                         than the line AND offset in y. The pour lays the
+                         bottle back 0.30 behind the glass at bottle
+                         height, so it sweeps across the line; the offset
+                         is what puts that sweep 0.25 clear of the nearest
+                         bottle instead of through it.
+
+           the holster   (0.10, 0.40), arm B's own station, and CLOSER in
+                         than the line rather than further out. Arm B
+                         descends vertically onto the opener, and a holster
+                         further out simply cannot be descended to: at 0.67
+                         from the base, measured, arm B stopped 346mm short
+                         and the goal failed outright.
+    -->
     <include>
       <uri>model://bar_counter</uri>
       <name>bar_counter</name>
-      <pose>0 0 0.9 0 0 0</pose>
+      <pose>0.08 0 0.9 0 0 0</pose>
     </include>
+
+    <!-- ===================== the bottle line =====================
+
+         y ascending. The free slots are y = +0.15 and +0.30; they hold
+         nothing, so there is nothing to include for them. They are named in
+         layout.BOTTLE_SLOTS, and that is where a new bottle gets added. -->
 
     <include>
       <uri>model://jack_daniels_bottle</uri>
       <name>jack_daniels_bottle</name>
-      <pose>0.15 0.15 0.9 0 0 0</pose>
+      <pose>0.08 -0.30 0.9 0 0 0</pose>
     </include>
 
-    <!-- Kept clear of the lane the whiskey is carried along. A grasped bottle
-         travels at world x=0.15 between y=+0.15 and y=-0.15 with its base only
-         0.155 above the counter, so anything standing at that x inside that y
-         span gets swept. At x=0.35 the cola is 127mm clear of the carried
-         bottle, while the approach lane in front of it (y=0) is clear of both
-         the whiskey and the glass, which sit at y=+/-0.15. -->
     <include>
       <uri>model://cola_bottle</uri>
       <name>cola_bottle</name>
-      <pose>0.35 0.0 0.9 0 0 0</pose>
+      <pose>0.08 -0.15 0.9 0 0 0</pose>
     </include>
-
 
     <!-- Bottle stands: shallow bottomless wells the bottle bases sit inside,
          so a bottle that is nudged during place-and-release is stopped by a
@@ -115,44 +170,32 @@
          reasoning and the dimensions.
 
          Posed at the bottles' OWN station poses, and bottomless, so the
-         bottle bases still rest at z=0.9 exactly as before - every
+         bottle bases still rest at z=0.9 exactly as before; every
          grasp_height in bartender_pour is measured up from that base and
          would otherwise be silently wrong. -->
     <include>
       <uri>model://whiskey_stand</uri>
       <name>whiskey_stand</name>
-      <pose>0.15 0.15 0.9 0 0 0</pose>
+      <pose>0.08 -0.30 0.9 0 0 0</pose>
     </include>
 
     <include>
       <uri>model://cola_stand</uri>
       <name>cola_stand</name>
-      <pose>0.35 0.0 0.9 0 0 0</pose>
-    </include>
-
-    <include>
-      <uri>model://serving_glass</uri>
-      <name>serving_glass</name>
-      <pose>0.15 -0.15 0.9 0 0 0</pose>
+      <pose>0.08 -0.15 0.9 0 0 0</pose>
     </include>
 
     <!-- ================= the beer, and what opens it =================
 
-         Station poses here are the single source of truth for the layout;
-         bartender_open reads the same numbers from its own STATIONS table
-         and bartender_open/test/test_layout.py checks the two agree, which
-         is the only thing stopping them drifting apart.
+         The beer takes the MIDDLE slot of the line, y = 0, which is the one
+         slot equidistant from the two arms: 0.664 from each, well inside a
+         UR5e's 850mm, and at +0.40 in BOTH arms' frames because they face
+         each other. It has to be a place both arms can work, since one
+         holds the bottle there while the other pushes down on it.
 
-         Where things are, and why:
-
-           beer     (-0.02, 0.21)  equidistant from both arms, 434mm from
-                                   arm A's base and 444mm from arm B's, and
-                                   180mm clear of the whiskey stand's rim.
-                                   It has to be a place BOTH arms can work,
-                                   because one holds the bottle there while
-                                   the other pushes down on it.
-           opener   ( 0.45, 0.20)  arm B's side of the counter, 516mm out,
-                                   and well clear of the cola station.
+         In the old layout the holster sat 112mm from the whiskey and the
+         carried opener hooked the bottle on its way past. Here they are
+         0.70m apart and on opposite sides of the line.
 
          The beer sits in a well like the other two bottles (see
          make_bottle_stands.py). It needs one more than they do: this is the
@@ -161,13 +204,13 @@
     <include>
       <uri>model://beer_stand</uri>
       <name>beer_stand</name>
-      <pose>-0.02 0.21 0.9 0 0 0</pose>
+      <pose>0.08 0.0 0.9 0 0 0</pose>
     </include>
 
     <include>
       <uri>model://beer_bottle</uri>
       <name>beer_bottle</name>
-      <pose>-0.02 0.21 0.9 0 0 0</pose>
+      <pose>0.08 0.0 0.9 0 0 0</pose>
     </include>
 
     <!-- The cap. A separate model on purpose: it is held to the bottle by
@@ -182,13 +225,21 @@
     <include>
       <uri>model://beer_cap</uri>
       <name>beer_cap</name>
-      <pose>-0.02 0.21 1.1581 0 0 0</pose>
+      <pose>0.08 0.0 1.1581 0 0 0</pose>
+    </include>
+
+    <!-- ============== each arm's own working station ============== -->
+
+    <include>
+      <uri>model://serving_glass</uri>
+      <name>serving_glass</name>
+      <pose>0.20 -0.55 0.9 0 0 0</pose>
     </include>
 
     <include>
       <uri>model://opener_holster</uri>
       <name>opener_holster</name>
-      <pose>0.45 0.20 0.9 0 0 0</pose>
+      <pose>0.10 0.40 0.9 0 0 0</pose>
     </include>
 
     <!-- Opener, over the holster post. Its origin is the bell RIM, and the
@@ -198,23 +249,16 @@
     <include>
       <uri>model://bottle_opener</uri>
       <name>bottle_opener</name>
-      <pose>0.45 0.20 0.9 0 0 0</pose>
+      <pose>0.10 0.40 0.9 0 0 0</pose>
     </include>
 
-    <!-- Arm B stands here. The robot itself is one model spawned by
-         ros_gz create and positioned at arm A's base, so this holds nothing
-         up; it is scenery and a planning-scene obstacle. Top face at 0.9,
-         level with the counter.
-
-         (0.15, 0.62) is arm B's base in WORLD coordinates. The description
-         states the same point as (0.55, 0.62, 0.0) relative to arm A, whose
-         base is the spawn pose (-0.4, 0, 0.9). The two have to agree and
-         nothing enforces it at runtime, so test_layout.py does. -->
-    <include>
-      <uri>model://arm_pedestal</uri>
-      <name>arm_b_pedestal</name>
-      <pose>0.15 0.62 0 0 0 0</pose>
-    </include>
+    <!-- NO PEDESTAL. Arm B stood on one, beside the counter at (0.15, 0.62),
+         for as long as the counter was too small to carry both arms. It now
+         bolts to the bar top the way arm A does, so the pedestal model is
+         gone and so is the matching box bartender_open used to publish into
+         the planning scene. The robot is one model spawned by ros_gz create
+         and positioned at arm A's base; the description carries arm B from
+         there. -->
 
   </world>
 </sdf>

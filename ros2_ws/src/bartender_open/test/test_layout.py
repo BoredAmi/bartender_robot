@@ -18,6 +18,7 @@ room for something.
 import importlib.util
 import math
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -39,9 +40,9 @@ XACRO = os.path.join(REPO, 'ros2_ws', 'src', 'bartender_description', 'urdf',
 MODELS = os.path.join(REPO, 'models')
 
 UR5E_REACH = 0.85
-# The counter is 1.2 x 0.6, centred on the world origin, top at 0.9.
-COUNTER = (1.2, 0.6)
 COUNTER_Z = 0.9
+POUR = os.path.join(REPO, 'ros2_ws', 'src', 'bartender_pour',
+                    'bartender_pour', 'pour_action_server.py')
 
 
 def _load_render_script():
@@ -88,12 +89,67 @@ def test_arm_b_origin_matches_the_description():
     assert yaw == pytest.approx(L.ARM_B_YAW, abs=1e-9)
 
 
-def test_arm_b_stands_on_its_pedestal():
-    pose = world_poses()['arm_b_pedestal']
-    assert pose[:2] == pytest.approx(list(L.ARM_B_ORIGIN[:2]), abs=1e-9)
-    # The pedestal is 0.9 tall with its origin on the floor, so its top face
-    # is exactly where the arm's base is.
-    assert pose[2] + 0.90 == pytest.approx(L.ARM_B_ORIGIN[2], abs=1e-9)
+def test_neither_arm_stands_on_a_pedestal_any_more():
+    """Both arms are bolted to the bar top, so nothing holds arm B up.
+
+    The pedestal was scenery and a planning-scene box for as long as the
+    counter was too small to carry arm B. Leaving the model in the world
+    after widening the counter would put a 0.9m block through the worktop,
+    and leaving the box in bartender_open's scene would make a volume the
+    arm legitimately occupies unplannable.
+    """
+    assert 'arm_b_pedestal' not in world_poses()
+    server = os.path.join(REPO, 'ros2_ws', 'src', 'bartender_open',
+                          'bartender_open', 'open_action_server.py')
+    assert "_obj('arm_b_pedestal'" not in open(server).read()
+
+
+def test_the_counter_matches_the_world():
+    """Compare layout's copy of the bar top with the model and its pose."""
+    pose = world_poses()['bar_counter']
+    assert pose[:2] == pytest.approx(list(L.COUNTER_CENTRE), abs=1e-9)
+    assert pose[2] == pytest.approx(COUNTER_Z, abs=1e-9)
+
+    model = os.path.join(MODELS, 'bar_counter', 'model.sdf')
+    box = ET.parse(model).getroot().find('.//collision/geometry/box/size')
+    size = [float(v) for v in box.text.split()]
+    assert size[:2] == pytest.approx(list(L.COUNTER_SIZE), abs=1e-9)
+    assert size[2] == pytest.approx(COUNTER_Z, abs=1e-9)
+
+
+def test_both_arms_stand_on_the_bar_top():
+    """Not beside it, and not hanging off the edge of it.
+
+    0.20 of margin is the arm's own footprint plus room for the base ring;
+    what this really catches is a counter resized without moving the arms,
+    or arms moved without resizing the counter.
+    """
+    for name, origin in (('A', L.ARM_A_ORIGIN), ('B', L.ARM_B_ORIGIN)):
+        for axis, centre, size in ((0, L.COUNTER_CENTRE[0], L.COUNTER_SIZE[0]),
+                                   (1, L.COUNTER_CENTRE[1], L.COUNTER_SIZE[1])):
+            assert abs(origin[axis] - centre) < size / 2.0 - 0.20, (
+                f'arm {name} is off the edge of the bar top on axis {axis}')
+
+
+def test_the_arms_face_each_other_across_the_line():
+    """The arrangement every station's frame conversion assumes.
+
+    Arm B is turned through pi, which is what puts the shared beer at
+    POSITIVE y in both arms' frames. Standing them parallel instead is the
+    thing that looks right and measures wrong; see APPROACH_WINDOW.
+    """
+    assert L.ARM_B_ORIGIN[2] == pytest.approx(L.ARM_A_ORIGIN[2], abs=1e-9)
+    assert abs(L.ARM_B_YAW - L.ARM_A_YAW) == pytest.approx(math.pi, abs=1e-9)
+    # Each arm's +x points at the line, from its own side of it.
+    for origin, yaw in ((L.ARM_A_ORIGIN, L.ARM_A_YAW),
+                        (L.ARM_B_ORIGIN, L.ARM_B_YAW)):
+        _x, _y, _z = L.to_arm((L.BOTTLE_LINE_X, origin[1], L.COUNTER_Z),
+                              origin, yaw)
+        assert _x > 0.0, 'the bottle line is behind this arm'
+    # Far enough apart that neither folds into the other, close enough that
+    # the middle slot is inside both.
+    apart = math.dist(L.ARM_A_ORIGIN[:2], L.ARM_B_ORIGIN[:2])
+    assert 0.8 < apart < 2.0 * L.reach(L.station_in_arm('beer', 'a'))
 
 
 def test_both_arm_bases_sit_at_counter_height():
@@ -109,11 +165,85 @@ def test_both_arm_bases_sit_at_counter_height():
     assert L.ARM_B_ORIGIN[2] == COUNTER_Z
 
 
-@pytest.mark.parametrize('station,model', [('beer', 'beer_bottle'),
-                                           ('opener', 'bottle_opener')])
+@pytest.mark.parametrize('station,model', [
+    ('beer', 'beer_bottle'),
+    ('opener', 'bottle_opener'),
+    ('whiskey', 'jack_daniels_bottle'),
+    ('cola', 'cola_bottle'),
+    ('glass', 'serving_glass'),
+])
 def test_station_matches_the_world(station, model):
     pose = world_poses()[model]
     assert pose[:2] == pytest.approx(list(L.STATIONS[station]), abs=1e-9)
+
+
+def test_every_station_is_a_slot_or_an_arms_own_spot():
+    """Nothing has a position of its own outside the three that are decided.
+
+    The value of the redesign is that a position is a slot index or one of
+    the two working stations, not a surveyed pair of numbers. A station that
+    is neither has been placed by hand and will be the one nobody moves when
+    the rest of the bar does.
+    """
+    slots = {y for y, _name in L.BOTTLE_SLOTS}
+    own = {L.STATION_GLASS, L.STATION_OPENER}
+    for name, xy in L.STATIONS.items():
+        if xy in own:
+            continue
+        assert xy[0] == L.BOTTLE_LINE_X, f'{name} is on no row'
+        assert xy[1] in slots, f'{name} is on the line but not in a slot'
+
+
+def test_the_empty_slots_are_really_empty():
+    """The room for expansion has to be room, not an unlisted bottle."""
+    placed = {tuple(p[:2]) for p in world_poses().values()}
+    for x, y in L.free_slots():
+        assert (x, y) not in placed, (
+            f'slot ({x}, {y}) is listed as free but the world file puts '
+            f'something there')
+    assert len(L.free_slots()) >= 2
+
+
+def test_the_slots_are_evenly_spaced_and_centred():
+    ys = [y for y, _ in L.BOTTLE_SLOTS]
+    assert ys == sorted(ys)
+    gaps = [b - a for a, b in zip(ys, ys[1:])]
+    assert gaps == pytest.approx([L.SLOT_PITCH] * len(gaps), abs=1e-9)
+    assert sum(ys) == pytest.approx(0.0, abs=1e-9)
+    assert L.slot_y(0) == pytest.approx(L.STATIONS['beer'][1], abs=1e-9)
+
+
+def test_every_slot_can_be_serviced_by_an_arm():
+    """A slot no arm can take a bottle off is tabletop, not a station.
+
+    This is the test that keeps the line honest about its own length. The
+    window it checks against was measured, not assumed; see
+    layout.APPROACH_WINDOW.
+    """
+    for y, name in L.BOTTLE_SLOTS:
+        arms = L.servicing_arms((L.BOTTLE_LINE_X, y))
+        assert arms, (
+            f'the slot at y={y} ({name or "free"}) is outside both arms\' '
+            f'approach windows')
+
+
+def test_the_beer_can_be_serviced_by_both_arms():
+    """It is the one slot that has to be, because both work it at once."""
+    assert L.servicing_arms(L.STATIONS['beer']) == ['a', 'b']
+
+
+def test_the_pour_sweep_misses_every_standing_bottle():
+    """The collision that decides where the glass goes.
+
+    A bottle is poured by tilting it about its grip point over the glass.
+    At POUR_TILT it lies nearly flat with its base about 0.30 behind the
+    glass and 0.18 above the counter -- below the 0.3055 top of anything
+    standing in the line. So the pour sweeps back across the line, and what
+    keeps it off the bottles is the glass being offset in y from every slot.
+    What has to fit in the gap is the whiskey's 0.0546 envelope plus the
+    widest standing one's, which is the whiskey's again.
+    """
+    assert L.pour_sweep_clearance() > 0.0546 + 0.0546 + 0.05
 
 
 def test_the_beer_stand_is_under_the_beer():
@@ -340,13 +470,45 @@ def test_a_cap_still_on_the_bottle_does_not_count_as_off():
 @pytest.mark.parametrize('station', sorted(L.STATIONS))
 def test_station_is_on_the_counter(station):
     x, y = L.STATIONS[station]
-    assert abs(x) < COUNTER[0] / 2.0 - L.BEER_STAND_RADIUS
-    assert abs(y) < COUNTER[1] / 2.0 - L.BEER_STAND_RADIUS
+    assert (abs(x - L.COUNTER_CENTRE[0])
+            < L.COUNTER_SIZE[0] / 2.0 - L.BEER_STAND_RADIUS)
+    assert (abs(y - L.COUNTER_CENTRE[1])
+            < L.COUNTER_SIZE[1] / 2.0 - L.BEER_STAND_RADIUS)
 
 
-def test_the_pedestal_is_off_the_counter():
-    """Arm B stands beside the worktop, not on it."""
-    assert L.ARM_B_ORIGIN[1] - 0.15 > COUNTER[1] / 2.0
+@pytest.mark.parametrize('x,y', L.free_slots())
+def test_a_free_slot_is_on_the_counter_too(x, y):
+    """An expansion slot nobody can put a bottle in is not expansion room."""
+    assert (abs(y - L.COUNTER_CENTRE[1])
+            < L.COUNTER_SIZE[1] / 2.0 - L.BEER_STAND_RADIUS)
+
+
+@pytest.mark.parametrize('x,y', L.free_slots())
+def test_a_free_slot_is_reachable_by_at_least_one_arm(x, y):
+    """Same point: a slot has to be servable or it is just tabletop."""
+    best = min(L.reach(L.to_arm((x, y, COUNTER_Z), origin, yaw))
+               for origin, yaw in ((L.ARM_A_ORIGIN, L.ARM_A_YAW),
+                                   (L.ARM_B_ORIGIN, L.ARM_B_YAW)))
+    assert best < UR5E_REACH * 0.8
+
+
+def test_the_bar_top_is_bigger_than_everything_standing_on_it():
+    """The counter has to contain the whole layout with a working margin.
+
+    Written as an envelope rather than as two numbers so that moving a
+    station or adding a slot is what fails this, rather than the first plan
+    that tries to reach past the edge.
+    """
+    xs = [L.ARM_A_ORIGIN[0], L.ARM_B_ORIGIN[0], L.BOTTLE_LINE_X]
+    ys = [L.ARM_A_ORIGIN[1], L.ARM_B_ORIGIN[1]] + [y for y, _ in L.BOTTLE_SLOTS]
+    for x, y in (L.STATION_GLASS, L.STATION_OPENER):
+        xs.append(x)
+        ys.append(y)
+    for lo, hi, centre, size, axis in (
+            (min(xs), max(xs), L.COUNTER_CENTRE[0], L.COUNTER_SIZE[0], 'x'),
+            (min(ys), max(ys), L.COUNTER_CENTRE[1], L.COUNTER_SIZE[1], 'y')):
+        assert lo - (centre - size / 2.0) > 0.20, f'no room at low {axis}'
+        assert (centre + size / 2.0) - hi > 0.20, f'no room at high {axis}'
 
 
 @pytest.mark.parametrize('station,arm', [('beer', 'a'), ('beer', 'b'),
@@ -379,10 +541,49 @@ def test_the_working_poses_are_within_reach():
 
 def test_the_beer_is_clear_of_the_other_stations():
     """Its stand must not overlap the whiskey's, and the arms need room."""
-    whiskey = (0.15, 0.15)
     beer = L.STATIONS['beer']
-    apart = math.dist(whiskey, beer)
-    assert apart > 0.0740 + L.BEER_STAND_RADIUS + 0.02
+    for name, xy in L.STATIONS.items():
+        if name == 'beer':
+            continue
+        apart = math.dist(xy, beer)
+        assert apart > 0.0740 + L.BEER_STAND_RADIUS + 0.02, (
+            f'the beer is only {apart:.3f} from the {name}')
+
+
+def test_a_carry_to_the_glass_passes_over_the_line_not_through_it():
+    """In a line, every carry crosses the line, so it has to go over.
+
+    On the old counter the bottles stood apart and a carry never passed one.
+    Here they are a slot-pitch apart with the glass off to the side, and the
+    plan-view gap is not enough: the cola's diagonal to the glass passes
+    59mm from the standing whiskey, against the 95mm of envelope that would
+    have to fit there. What makes it safe is height, so that is what this
+    checks -- and it checks the geometry that decides the height rather than
+    the constant, so a taller bottle fails it.
+
+    Parsed out of bartender_pour, which owns the number.
+    """
+    if not os.path.exists(POUR):
+        pytest.skip('bartender_pour absent')
+    text = open(POUR).read()
+    match = re.search(r'^CARRY_MOUTH_Z\s*=\s*([\d.]+)', text, re.M)
+    assert match, 'CARRY_MOUTH_Z not found in pour_action_server'
+    carry_mouth = float(match.group(1))
+
+    heights = {name: float(h) for name, h in re.findall(
+        r"name='(\w+)',\s*\n\s*xy=\([^)]*\),\s*\n\s*height=([\d.]+)",
+        text)}
+    assert heights, 'could not read the bottle heights'
+    for name, height in heights.items():
+        base = carry_mouth - height
+        assert base > L.COUNTER_TALLEST + 0.02, (
+            f'a carried {name} rides with its base at {base:.3f}, which is '
+            f'not clear of the {L.COUNTER_TALLEST} tall bottle it passes')
+
+
+def test_the_glass_is_off_every_slot_so_the_pour_sweep_misses():
+    """Height does not save the pour itself: that happens low, over the glass."""
+    assert L.pour_sweep_clearance() > 0.0546 + 0.0546 + 0.05
 
 
 # -- frame conversion -------------------------------------------------------
@@ -397,16 +598,50 @@ def test_to_arm_and_to_world_are_inverses(point, arm):
     assert L.to_world(there, origin, yaw) == pytest.approx(point, abs=1e-12)
 
 
-def test_arm_b_faces_the_counter():
-    """Its +x must point back across the worktop, not away from it.
+@pytest.mark.parametrize('arm', ['a', 'b'])
+def test_each_arm_faces_its_own_work(arm):
+    """An arm's +x must point at the bar, not away from it.
 
     Yaw only decides where joint angles point, but getting it backwards puts
     every side grasp's approach direction 180 degrees out, and the arm tries
-    to reach the counter through its own shoulder.
+    to reach the bar through its own shoulder.
     """
-    ahead = L.to_world((1.0, 0.0, 0.0), L.ARM_B_ORIGIN, L.ARM_B_YAW)
-    direction = (ahead[0] - L.ARM_B_ORIGIN[0], ahead[1] - L.ARM_B_ORIGIN[1])
-    assert direction[1] < -0.9, 'arm B should face world -y'
+    station = 'glass' if arm == 'a' else 'opener'
+    for name in ('beer', station):
+        x, _y, _z = L.station_in_arm(name, arm)
+        assert x > 0.25, (
+            f'the {name} is at x={x:.3f} in arm {arm}\'s frame, which is '
+            f'behind or on top of its own shoulder')
+
+
+def test_the_shared_beer_is_on_both_arms_good_side():
+    """The whole reason arm B is turned round.
+
+    APPROACH_WINDOW is a band of POSITIVE y in an arm's own frame. The beer
+    is the one station both arms work, so it is the one that has to be in
+    both windows at once, and that is only possible with the arms facing.
+    """
+    for arm in ('a', 'b'):
+        _x, y, _z = L.station_in_arm('beer', arm)
+        lo, hi = L.APPROACH_WINDOW
+        assert lo <= y <= hi, (
+            f'the beer is at y={y:.3f} in arm {arm}\'s frame, outside the '
+            f'measured approach window {L.APPROACH_WINDOW}')
+
+
+def test_the_holster_is_closer_in_than_the_line():
+    """Arm B descends vertically onto the opener, and that limits reach.
+
+    Measured: a holster 0.67 from arm B's base could not be descended to at
+    all -- the arm stopped 346mm short and the goal failed on "arm B could
+    not pick up the opener". The line is at 0.53; the holster has to be
+    inside that, not beyond it.
+    """
+    opener = L.reach(L.station_in_arm('opener', 'b'))
+    line = L.station_in_arm('beer', 'b')[0]
+    assert opener < line, (
+        f'the holster is {opener:.3f} from arm B, past the line at {line:.3f}')
+    assert opener < 0.60
 
 
 def test_side_grasp_tool0_sets_the_flange_back_from_the_pads():
@@ -477,3 +712,66 @@ def test_arm_b_can_reach_its_stations_at_cruising_height():
         assert out < UR5E_REACH - 0.10, (
             f'arm B would be {out:.3f}m from its base over the {station} '
             f'at cruising height')
+
+
+# -- bartender_pour states the same bar in arm A's frame ---------------------
+
+def _pour_literals():
+    """Read the pour server's station coordinates out of its source text.
+
+    Parsed rather than imported: pour_action_server pulls in rclpy, MoveIt
+    messages and the generated action interfaces, so importing it would make
+    this only runnable on a built, sourced workspace -- and this is exactly
+    the check you want before building. Same reason test_seeded_points.py
+    parses it.
+    """
+    if not os.path.exists(POUR):
+        return {}
+    text = open(POUR).read()
+    found = {}
+    match = re.search(r'^GLASS_XY\s*=\s*\(([^)]*)\)', text, re.M)
+    if match:
+        found['glass'] = tuple(float(v) for v in match.group(1).split(','))
+    for name, xy in re.findall(
+            r"name='(\w+)',\s*\n\s*xy=\(([^)]*)\)", text):
+        found.setdefault(name, tuple(float(v) for v in xy.split(',')))
+    return found
+
+
+def test_the_pour_server_still_names_its_stations():
+    """If this fails the parse above has gone stale and the rest is empty."""
+    assert set(_pour_literals()) >= {'glass', 'whiskey', 'cola'}
+
+
+@pytest.mark.parametrize('station', ['glass', 'whiskey', 'cola'])
+def test_the_pour_servers_stations_match_the_layout(station):
+    """Check one position stated twice, in packages that cannot import each other.
+
+    bartender_pour works entirely in arm A's base frame and has no
+    dependency on bartender_open, so its three stations are a second copy of
+    numbers this file decides. A copy that drifts does not fail anywhere: the
+    arm reaches confidently for a place the bottle is not.
+    """
+    literals = _pour_literals()
+    x, y, _ = L.station_in_arm(station, 'a')
+    assert literals[station] == pytest.approx((x, y), abs=1e-9), (
+        f"pour_action_server puts the {station} at {literals[station]} in "
+        f'base_link; the layout puts it at {(round(x, 4), round(y, 4))}')
+
+
+def test_the_pour_servers_counter_box_matches_the_bar_top():
+    """The planning scene's counter, which is the only one MoveIt sees."""
+    if not os.path.exists(POUR):
+        pytest.skip('bartender_pour absent')
+    text = open(POUR).read()
+    match = re.search(r'^COUNTER_BOX\s*=\s*\(\(([^)]*)\),\s*\(([^)]*)\)\)',
+                      text, re.M)
+    assert match, 'COUNTER_BOX not found in pour_action_server'
+    centre = [float(v) for v in match.group(1).split(',')]
+    size = [float(v) for v in match.group(2).split(',')]
+    # The top is at COUNTER_Z and the box hangs its full 0.9 below, so its
+    # centre is half a counter down from the arm bases.
+    want = L.to_arm((L.COUNTER_CENTRE[0], L.COUNTER_CENTRE[1],
+                     COUNTER_Z - size[2] / 2.0), L.ARM_A_ORIGIN, L.ARM_A_YAW)
+    assert centre == pytest.approx(list(want), abs=1e-9)
+    assert size[:2] == pytest.approx(list(L.COUNTER_SIZE), abs=1e-9)

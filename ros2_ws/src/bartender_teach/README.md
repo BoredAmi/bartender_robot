@@ -31,7 +31,8 @@ ros2 run bartender_teach teach_gui
 
 Live joint angles and tool pose, +/- buttons for every joint and every
 Cartesian axis with a selectable step, gripper controls, the point list with
-Go and Delete, and a box to save where the arm is now. Arrow keys jog base Z
+Go and Delete, a box to save where the arm is now, and a Pipelines panel that
+records, runs and dry-runs sequences (see below). Arrow keys jog base Z
 and Y. There is also a command box that takes anything the terminal pendant
 takes, so nothing is hidden behind the buttons.
 
@@ -91,7 +92,135 @@ teach> export whiskey_pregrasp
 | `jog rx\|ry\|rz DEG` | rotate about a base axis, position held |
 | `tool [NAME]` | list tool centre points, or select one |
 | `open` / `close [POS]` | gripper |
+| `wait [SECONDS]` | pause, and record the pause |
+| `record NAME [note]` | start building a pipeline out of what you teach |
+| `stop` | finish it |
+| `run NAME [dry]` | replay one; `dry` lists the steps without moving |
+| `pipeline ...` | list, show, rm, step, drop, export — see below |
 | `export [NAME]` | print as a `pour_action_server` source snippet |
+
+## Record mode: building a pipeline while you teach
+
+A point says where the arm can be. A **pipeline** says what order to visit
+points in, and what the gripper does on the way — the other half of
+describing a skill, and the half that used to exist only as Python inside an
+action server.
+
+`record` turns teaching into sequence-building. While it is on, `save`,
+`goto`, `open`, `close` and `wait` each append a step as well as doing their
+job, so the sequence falls out of the teaching you were doing anyway instead
+of being reconstructed afterwards with the robot already somewhere else.
+
+```
+teach[a]> record pour_v2  spirit first, mixer second
+  recording pour_v2.
+  save, goto and the gripper commands now also append a step. Jogs do not:
+  they are how you reach a point, and a relative move cannot be replayed.
+  `save` with no name auto-names. `stop` when the sequence is complete.
+teach[a] rec:pour_v2> jog tz -40
+  jogged tz -40mm
+teach[a] rec:pour_v2> save
+  saved pour_v2_01 -> /home/.../taught_points.yaml
+  + step 1: goto pour_v2_01
+teach[a] rec:pour_v2> close 0.25
+  arm A's gripper closing to 0.250
+  + step 2: grip 0.250 (arm a)
+teach[a] rec:pour_v2> save whiskey_pour  over the glass
+  saved whiskey_pour -> /home/.../taught_points.yaml
+  + step 3: goto whiskey_pour
+teach[a] rec:pour_v2> stop
+  stopped. pour_v2: 3 step(s) -> /home/.../taught_points.yaml
+teach[a]> run pour_v2 dry
+  planning pour_v2: 3 step(s)
+   1/3  goto pour_v2_01   -> arm A
+   2/3  grip 0.250 (arm a)
+   3/3  goto whiskey_pour   -> arm A
+  planned pour_v2
+```
+
+`save` with no name auto-names after the pipeline (`pour_v2_01`,
+`pour_v2_02`, …), because jog–save–jog–save is the loop this mode exists for
+and naming every waypoint is work that mostly produces names nobody reads.
+Names already taken are skipped, so re-recording never redefines the points
+an older pipeline still runs on.
+
+### Steps are points, never jogs
+
+A step is `goto <named point>`, and that is what makes a pipeline
+reproducible. A jog is relative to wherever the arm happens to be, so a
+recorded jog only replays correctly if every step before it landed exactly
+where it did while recording — and they do not, because the controller tracks
+to a tolerance and because a failed step leaves the arm somewhere else
+entirely. A sequence of relative moves drifts, and it drifts *silently*:
+every step reports success and the tip ends up somewhere nobody taught.
+
+Absolute joint configurations cannot drift. Jogging is still how you reach
+the places; it just is not what gets recorded. There is deliberately no
+`jog` step kind to add by hand.
+
+### The other commands
+
+| | |
+|---|---|
+| `pipeline` | list them, marking the one being recorded |
+| `pipeline show NAME` | every step, with the arm each drives |
+| `pipeline rm NAME` | delete one |
+| `pipeline step KIND VAL [note]` | append by hand while recording |
+| `pipeline drop [N]` | remove the last step, or step N |
+| `pipeline export [NAME]` | print as a Python literal |
+
+`pipeline export` gives you the sequence in the shape an action server wants,
+which is where all of these sequences lived before there was anywhere else to
+put them:
+
+```
+teach> pipeline export pour_v2
+  # pour_v2  -- spirit first, mixer second
+  POUR_V2 = [
+      ('goto', 'pour_v2_01'),
+      ('grip', 0.2500, 'a'),
+      ('goto', 'whiskey_pour'),
+  ]
+```
+
+### Behaviour worth knowing about
+
+**A `grip` step records which arm it was made on.** A `goto` never needs to:
+a point carries the joint names it was taught with, so there is exactly one
+arm it can mean. `grip 0.25` is a perfectly good command to either gripper,
+so the arm is stored with the step — otherwise a replay would close whichever
+gripper happened to be selected, while the other one is holding the bottle.
+
+**Steps are written to disk as they are recorded,** not on `stop`, and the
+pipeline appears in the file the moment `record` starts. Same reasoning as
+points: a session at the robot is the one artefact here that cannot be
+reproduced by re-running something, and that includes the order.
+
+**A move that failed does not become a step.** Recording it would write a
+pipeline whose first run is already known not to work.
+
+**`stop` discards a pipeline that recorded nothing.** An empty one is clutter
+rather than data, and leaving it behind would make the next `record` of that
+name collide with something holding no steps.
+
+**`run` refuses while recording,** because the replay would be appended to
+the pipeline being recorded, step by step. It also checks every point exists
+*before* anything moves — finding out at step 9 of 11 leaves the arm
+mid-sequence holding something — and stops at the first step that fails,
+rather than driving the rest from the wrong place.
+
+**Bounds are refused, not clamped** (`grip` 0–0.8 rad, `wait` 0–60 s), for
+the same reason jog distances are: the file is what a person reads to find
+out what the robot will do, and a clamped value makes it say one thing while
+the robot does another.
+
+**Pipelines live in the same file as the points,** under a `pipelines:` key,
+because a pipeline is meaningless without the points it names and two files
+to keep in step would be a way to lose one. The key is omitted entirely when
+there are none, so a workspace that never records one sees no change. A
+malformed pipeline is reported with its position — `pipeline 'pour' step 2:
+grip 9rad is outside 0..0.8rad` — and as a `PointStoreError`, so everything
+that already handles a bad point file handles this too.
 
 ## Two arms
 
@@ -101,9 +230,10 @@ one everything acts on, and the prompt says which is live (`teach[b]>`).
 Three things are worth knowing, because each is a way to move the wrong arm:
 
 - **Jog and pose axes are in the selected arm's own base frame.** Arm B's is
-  `b_base_link`, and the two arms sit 0.55 × 0.62 m apart — a jog issued in
-  the wrong frame lands most of a metre from where it was asked for. `state`
-  names the frame it is reporting in, every time.
+  `b_base_link`, and the two arms sit 1.06 × 0.80 m apart facing each other,
+  so their axes point opposite ways — a jog issued in the wrong frame lands
+  most of a metre from where it was asked for, in the wrong direction.
+  `state` names the frame it is reporting in, every time.
 - **`goto` uses the arm the point was taught on, not the selected one.** A
   point is a set of named joint values and those names say which arm it is;
   there is exactly one right answer, so it just goes, and says so when that
@@ -235,7 +365,7 @@ asserts that, and is meant to fail if you retune one copy and not the other.
 cd src/bartender_teach && python3 -m pytest test/ -q
 ```
 
-594 tests, no robot needed — the motion calls are stubbed, so what is checked
+701 tests, no robot needed — the motion calls are stubbed, so what is checked
 is *which* pose the pendant asks for. The quaternion helpers are tested
 against known rotations because that is where a bug would be silent: a wrong
 rotation still produces a perfectly valid pose, and the arm goes somewhere

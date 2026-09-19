@@ -175,3 +175,63 @@ def test_add_refuses_to_clobber_by_default(tmp_path):
 def test_remove_unknown_raises(tmp_path):
     with pytest.raises(PointStoreError):
         PointStore(str(tmp_path / 'p.yaml')).remove('a')
+
+
+# -- pipelines in the same file ---------------------------------------------
+#
+# Pipelines share the point file because a pipeline is meaningless without the
+# points it names. What matters here is that they cost the readers which only
+# want points -- the two action servers -- nothing at all.
+
+def test_a_file_with_no_pipelines_loads_as_having_none(tmp_path):
+    path = write(tmp_path, 'points:\n  p:\n    joints: {a: 0.0}\n')
+    assert PointStore.load(path).pipelines == {}
+
+
+def test_saving_without_pipelines_writes_no_pipelines_key(tmp_path):
+    """So a workspace that never records one keeps an unchanged diff."""
+    store = PointStore(str(tmp_path / 'p.yaml'))
+    store.add(Point('here', SAMPLE))
+    store.save()
+    assert 'pipelines' not in yaml.safe_load(open(store.path))
+
+
+def test_a_pipeline_survives_save_and_load(tmp_path):
+    from bartender_teach.pipelines import Pipeline, Step
+    store = PointStore(str(tmp_path / 'p.yaml'))
+    store.add(Point('here', SAMPLE))
+    store.pipelines['go'] = Pipeline(
+        'go', [Step('goto', 'here'), Step('grip', 0.25, 'clamp', 'a'),
+               Step('wait', 0.5)], note='a note')
+    store.save()
+
+    back = PointStore.load(store.path).pipelines['go']
+    assert back.note == 'a note'
+    assert [s.describe() for s in back.steps] == [
+        'goto here', 'grip 0.250 (arm a)  -- clamp', 'wait 0.5s']
+
+
+def test_a_pipeline_may_name_points_that_do_not_exist_yet(tmp_path):
+    """Allow a pipeline written before its points are taught.
+
+    Refusing would take the whole file down, including for the action
+    servers, which ignore pipelines entirely.
+    """
+    path = write(tmp_path, 'points: {}\npipelines:\n  go:\n'
+                           '    steps: [{goto: later}]\n')
+    store = PointStore.load(path)
+    assert store.pipelines['go'].missing_points(store) == ['later']
+
+
+def test_a_malformed_pipeline_is_a_point_store_error(tmp_path):
+    """Every caller already handles that type; a new one would escape them."""
+    path = write(tmp_path, 'points: {}\npipelines:\n  go:\n'
+                           '    steps: [{grip: 99.0}]\n')
+    with pytest.raises(PointStoreError):
+        PointStore.load(path)
+
+
+def test_pipelines_that_are_not_a_mapping_are_refused(tmp_path):
+    path = write(tmp_path, 'points: {}\npipelines: 7\n')
+    with pytest.raises(PointStoreError):
+        PointStore.load(path)

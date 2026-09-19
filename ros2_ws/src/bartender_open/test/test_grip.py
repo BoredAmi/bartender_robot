@@ -18,6 +18,7 @@ straight line for no visible reason.
 import math
 import os
 import sys
+import types
 
 import pytest
 
@@ -26,7 +27,7 @@ REPO = os.path.normpath(os.path.join(HERE, *([os.pardir] * 4)))
 sys.path.insert(0, os.path.join(REPO, 'ros2_ws', 'src', 'bartender_open'))
 
 from bartender_open.arm import (                        # noqa: E402
-    GRASP_LOOSE, GRASP_PENETRATION, GRIPPER_FULLY_CLOSED,
+    Arm, GRASP_LOOSE, GRASP_PENETRATION, GRIPPER_FULLY_CLOSED,
     GRIPPER_PRE_CLOSE_GAP, GRIPPER_SQUEEZE, PAD_GAP, SIDE_QUAT,
     gap_for_knuckle, knuckle_for_gap, side_quat, wrap_to_pi,
 )
@@ -228,3 +229,115 @@ def test_side_quat_maps_tool_y_onto_the_arms_z():
     local_y = (2 * (x * y - z * w), 1 - 2 * (x * x + z * z),
                2 * (y * z + x * w))
     assert local_y == pytest.approx((0.0, 0.0, 1.0), abs=1e-12)
+
+
+# -- the close loop ---------------------------------------------------------
+#
+# Arm.grasp is driven here through a stand-in that answers the four things it
+# asks of the robot, so the LOOP is what is under test rather than the pure
+# helpers above.
+#
+# It is tested because this loop is where a guard sat unreachable. The
+# "gripper is not moving" check was written for a gripper jammed at its open
+# stop, and it was placed after a width test that such a gripper always takes
+# the other branch of -- so it never once ran, and the failure it exists to
+# name was reported as "fingers closed all the way without meeting anything"
+# instead. Nothing caught that, because nothing drove the loop.
+
+class FakeGripper:
+    """Answers Arm.grasp's questions with a scripted knuckle.
+
+    `follow` decides where the joint ends up for a command: a real gripper
+    tracks until something stops it, a jammed one never moves at all.
+    """
+
+    label = 'test arm'
+
+    def __init__(self, follow):
+        self._follow = follow
+        self.position = 0.0
+        self.commands = []
+
+    # -- the four things grasp() needs -----------------------------------
+
+    def gripper_position(self):
+        return self.position
+
+    def _send_gripper(self, command):
+        self.commands.append(command)
+        self.position = self._follow(command)
+        return types.SimpleNamespace(accepted=True)
+
+    def wait_for_gripper(self, command=None, timeout_s=None):
+        return self.position
+
+    def _log(self):
+        return types.SimpleNamespace(
+            info=lambda *a, **k: None, warn=lambda *a, **k: None,
+            error=lambda *a, **k: None)
+
+
+def grasp_with(follow, width):
+    """Run the real Arm.grasp against a scripted gripper."""
+    fake = FakeGripper(follow)
+    return Arm.grasp(fake, width), fake
+
+
+def test_a_gripper_that_never_moves_is_reported_as_not_moving(caplog):
+    """The case the guard exists for: the joint stays at its open stop."""
+    result, fake = grasp_with(lambda command: 0.0, L.BEER_WIDTH)
+    assert result is None
+    # and it gives up quickly rather than walking the command to fully closed
+    assert max(fake.commands) < GRIPPER_FULLY_CLOSED
+
+
+def test_a_gripper_that_never_moves_does_not_report_meeting_nothing():
+    """Name the gripper, not the object.
+
+    The message this replaced described where the opener was, and sent the
+    search to the wrong place entirely.
+    """
+    messages = []
+    fake = FakeGripper(lambda command: 0.0)
+    fake._log = lambda: types.SimpleNamespace(
+        info=lambda m, *a: None, warn=lambda m, *a: None,
+        error=lambda m, *a: messages.append(m))
+    assert Arm.grasp(fake, L.BEER_WIDTH) is None
+    assert any('not following' in m for m in messages)
+    assert not any('without meeting anything' in m for m in messages)
+
+
+def test_a_gripper_that_closes_on_nothing_runs_to_the_end():
+    """Tell an empty gripper from a jammed one.
+
+    A gripper that DOES follow, onto thin air, is the other failure, and it
+    must not borrow the message for a gripper that never moved.
+    """
+    messages = []
+    fake = FakeGripper(lambda command: command)      # tracks perfectly
+    fake._log = lambda: types.SimpleNamespace(
+        info=lambda m, *a: None, warn=lambda m, *a: None,
+        error=lambda m, *a: messages.append(m))
+    assert Arm.grasp(fake, L.BEER_WIDTH) is None
+    assert any('without meeting anything' in m for m in messages)
+    assert not any('not following' in m for m in messages)
+
+
+def test_closing_onto_an_object_returns_where_the_fingers_stopped():
+    """The normal case: the joint tracks until the pads meet the object."""
+    stall = knuckle_for_gap(L.BEER_WIDTH)
+
+    def follow(command):
+        return min(command, stall)
+
+    reached, _ = grasp_with(follow, L.BEER_WIDTH)
+    assert reached == pytest.approx(stall, abs=1e-6)
+
+
+def test_a_stall_far_wider_than_the_object_is_refused():
+    """Stopping on something is not the same as stopping on the right thing."""
+    def follow(command):
+        return min(command, knuckle_for_gap(L.BEER_WIDTH * 3))
+
+    reached, _ = grasp_with(follow, L.BEER_WIDTH)
+    assert reached is None

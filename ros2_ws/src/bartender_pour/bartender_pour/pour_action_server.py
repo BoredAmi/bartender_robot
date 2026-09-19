@@ -171,7 +171,7 @@ from bartender_teach.point_store import (
     PointStore, PointStoreError, default_points_path,
 )
 from bartender_teach.tool_frames import (
-    Tool, grasped_bottle_tool, tcp_from_tool0, tool0_from_tcp,
+    Tool, grasped_bottle_tool, tool0_from_tcp,
 )
 
 ARM_JOINTS = [
@@ -188,10 +188,26 @@ EEF_LINK = 'tool0'
 PLANNING_FRAME = 'base_link'
 GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'
 
-# Object positions in base_link. bar_world.sdf places the bottle and glass at
-# world (0.15, +/-0.15, 0.9); the robot is spawned at world (-0.4, 0, 0.9)
-# with no rotation, so base_link x = world x + 0.4 and base_link z = world z - 0.9.
-GLASS_XY = (0.55, -0.15)
+# Object positions in base_link. Arm A is spawned at world (-0.45, -0.40,
+# 0.9) with no rotation, so base_link x = world x + 0.45, base_link
+# y = world y + 0.40, and base_link z = world z - 0.9.
+#
+# The bar's layout is decided in bartender_open/layout.py -- a bottle line
+# at world x = 0.08 with five slots at a 0.15 pitch, and a working station
+# for each arm off it -- and restated here in arm A's frame because this
+# cannot import that one. bartender_open/test_layout.py parses this file and
+# checks the three numbers below against it, so they cannot drift.
+#
+# The bottle line lands at base_link x = 0.53 for every slot, which is why
+# WHISKEY and COLA share an x and differ only in y.
+#
+# The glass is NOT on the line and not on the arm's centreline either. It is
+# at base_link (0.65, -0.15) -- further out than the line, and offset in y
+# so that the pour, which lays the bottle back 0.30 behind the glass at
+# bottle height, sweeps across a part of the line where there is no slot.
+# layout.pour_sweep_clearance() is the check; it is 0.25 against the 0.095
+# of bottle envelope that has to fit in it.
+GLASS_XY = (0.65, -0.15)
 # serving_glass is a 0.09-tall, 0.04-radius cylinder standing on the counter,
 # so its rim is at GLASS_HEIGHT and everything carried over it must clear that.
 GLASS_HEIGHT = 0.09
@@ -299,7 +315,32 @@ APPROACH_Z = 0.30
 # carry.
 SPOUT_ABOVE_MOUTH = 0.054    # pourer tip above the bottle's lip, along its axis
 SPOUT_OFF_AXIS = 0.0171      # ...and to the side of it, toward bottle-local +X
-CARRY_MOUTH_Z = 0.40         # upright bottle's base then sits clear of the glass
+# Height of the carried bottle's MOUTH while it crosses the bar, and with
+# it the whole transit: the lift ends here and tilt_pose(0) is at the same
+# height, so a bottle travels from its slot to the glass on the level.
+#
+# 0.61, raised from 0.40 when the bar was rebuilt around a bottle line.
+#
+# 0.40 only had to clear the glass, because on the old counter the bottles
+# stood apart and a carry never passed over one. In a line they are 0.15
+# apart and the glass is off to the side, so every carry crosses the line:
+# measured on this layout, the cola's diagonal to the glass passes 59mm from
+# the standing whiskey in plan view, against the 95mm of bottle envelope
+# that would have to fit there. Going round is not available -- the glass
+# cannot be moved far enough sideways without leaving the arm's reach -- so
+# the carry goes over instead.
+#
+# The number is derived rather than picked. The tallest thing standing on
+# the counter is the cola with its pour spout at 0.3055, the carried bottle
+# hangs below its own mouth by its full height, and 0.05 is the same margin
+# APPROACH_Z leaves for a joint-space move to overshoot by:
+#
+#     CARRY_MOUTH_Z >= 0.3055 + 0.05 + 0.250 (the taller bottle) = 0.6055
+#
+# That leaves the whiskey's base riding at 0.365 and the cola's at 0.360,
+# both clear of anything they pass. It costs reach and was checked for it:
+# the furthest the flange gets is 0.70 from the shoulder, over the glass.
+CARRY_MOUTH_Z = 0.61
 CARRY_SPOUT_Z = CARRY_MOUTH_Z + SPOUT_ABOVE_MOUTH
 POUR_SPOUT_Z = 0.14          # 50mm above the rim
 
@@ -387,10 +428,6 @@ class Bottle(NamedTuple):
         return self.height - self.grasp_height
 
     @property
-    def base_below_grip(self):
-        return self.grasp_height
-
-    @property
     def grasp_x(self):
         return self.xy[0] - GRIP_AHEAD_OF_TOOL0
 
@@ -459,12 +496,14 @@ class Bottle(NamedTuple):
 # each setting measured.
 WHISKEY = Bottle(
     name='whiskey',
-    xy=(0.55, 0.15),
+    xy=(0.53, 0.10),
     height=0.245,
     grasp_height=0.1225,
     envelope_radius=0.0546,      # 0.0386 * sqrt(2), the square's corners
     clamp_pos=0.25,
-    approach_joints=_taught('whiskey_approach', [0.0790, -1.9050, 2.3370, -0.4320, 1.6500, 0.0]),
+    approach_joints=_taught(
+        'whiskey_approach',
+        [-0.1905, -2.1401, 2.1357, 0.0044, 1.3803, 0.0000]),
     stand_radius=0.0740,
 )
 
@@ -512,12 +551,14 @@ WHISKEY = Bottle(
 # in the fingers.
 COLA = Bottle(
     name='cola',
-    xy=(0.75, 0.0),
+    xy=(0.53, 0.25),
     height=0.250,
     grasp_height=0.060,
     envelope_radius=0.0400,
     clamp_pos=0.44,
-    approach_joints=_taught('cola_approach', [-0.3350, -1.4820, 1.9770, -0.4940, 1.2360, 0.0]),
+    approach_joints=_taught(
+        'cola_approach',
+        [0.4901, -1.7912, 2.0955, -0.3043, 2.0609, 0.0000]),
     stand_radius=0.0560,
 )
 
@@ -586,7 +627,10 @@ MIXER_RATIO = 3.0
 # as cylinders, conservative at any yaw. These constrain only the joint-space
 # transits: every Cartesian segment runs with avoid_collisions=False, because
 # the grasp itself has to be allowed to reach in and touch the bottle.
-COUNTER_BOX = ((0.4, 0.0, -0.45), (1.2, 0.6, 0.9))
+# The bar top, in base_link: layout.COUNTER_SIZE at layout.COUNTER_CENTRE,
+# which is world (0.08, 0) and 1.76 x 1.6. It carries both arms now, so it
+# is also what fills the volume arm B's pedestal used to occupy.
+COUNTER_BOX = ((0.53, 0.40, -0.45), (1.76, 1.6, 0.9))
 GLASS_ENVELOPE_RADIUS = 0.05
 # Height of a bottle stand, from make_bottle_stands.py (HOLD_H + LEAD_H).
 STAND_HEIGHT = 0.026
@@ -670,21 +714,6 @@ def tilt_pose(theta: float, bottle: 'Bottle') -> Pose:
     (pose.orientation.x, pose.orientation.y,
      pose.orientation.z, pose.orientation.w) = quat
     return pose
-
-
-def bottle_base_clearance(theta: float, bottle: 'Bottle') -> float:
-    """Height of the bottle's base above the counter at a given tilt.
-
-    Only used to sanity-check the tilt schedule; must stay positive
-    throughout. The base rides 54mm higher than it did before the pourer was
-    fitted, because the spout now occupies the height the mouth used to.
-    """
-    pose = tilt_pose(theta, bottle)
-    base, _ = tcp_from_tool0(
-        (pose.position.x, pose.position.y, pose.position.z),
-        side_quat(theta),
-        _axis_point_tool(f'{bottle.name}_base', -bottle.base_below_grip))
-    return base[2]
 
 
 class PourActionServer(Node):

@@ -58,12 +58,13 @@ from moveit_msgs.msg import (
 from moveit_msgs.srv import GetCartesianPath, GetPositionFK
 from sensor_msgs.msg import JointState
 
+from bartender_teach.pipelines import Pipeline, PipelineError, Step
 from bartender_teach.point_store import (
     Point, PointStore, PointStoreError, default_points_path,
 )
-from bartender_teach.tool_frames import (           # noqa: F401
-    TOOL0, TOOLS, get_tool, quat_about, quat_mul, quat_rotate,
-    rotate_about_tcp, tcp_from_tool0,
+from bartender_teach.tool_frames import (
+    TOOL0, TOOLS, get_tool, quat_about, quat_rotate, rotate_about_tcp,
+    tcp_from_tool0,
 )
 
 # Kept in step with pour_action_server; a point taught here is meant to be
@@ -77,7 +78,8 @@ from bartender_teach.tool_frames import (           # noqa: F401
 # that asymmetry is in bartender_description/urdf/bartender.urdf.xacro.
 #
 # Note that arm B's PLANNING FRAME is b_base_link, not base_link. The two arms
-# do not share an origin -- arm B sits 0.55 forward and 0.62 across from arm A
+# do not share an origin -- arm B sits 1.06 along and 0.80 across from arm A,
+# turned to face back at it
 # -- so a pose read or jogged in the wrong frame lands most of a metre from
 # where it was asked for. That is the one mistake this split exists to make
 # impossible.
@@ -441,6 +443,16 @@ HELP = """\
                            selected tool's tip still (see `tool`)
 
   open | close [POS]       gripper (POS in radians, default 0.5)
+  wait [SECONDS]           pause, and record the pause (default 1)
+
+  record NAME [note...]    start building a pipeline out of what you teach
+  stop                     finish it
+  run NAME [dry]           replay one; `dry` lists the steps without moving
+  pipeline                 list them
+  pipeline show|rm NAME    one in full, or delete it
+  pipeline step KIND VAL   append by hand while recording (goto|grip|wait)
+  pipeline drop [N]        remove the last step, or step N
+  pipeline export [NAME]   print as a Python literal
   tool [NAME]              list tool centre points, or select one
   safety [on|off]          collision checking for Cartesian jogs
   export [NAME]            print as a pour_action_server source snippet
@@ -450,6 +462,10 @@ HELP = """\
 Everything except `list`, `show` and `goto` acts on the SELECTED arm. Jog and
 pose axes are in that arm's own base frame, which for arm B is b_base_link --
 the two arms do not share an origin.
+
+While recording, `save`, `goto`, `open` and `close` also append a step, and
+`save` with no name auto-names it after the pipeline. Jogs never become
+steps: they are how you reach a point, and a relative move does not replay.
 """
 
 
@@ -472,6 +488,12 @@ class Pendant:
         # frames existed. Selecting a bottle's spout makes ROTATION jogs turn
         # about that spout instead, holding its xyz still.
         self.tool = TOOL0
+        # The pipeline currently being recorded, or None. RECORD MODE is the
+        # whole feature: while this is set, teaching a point also appends a
+        # step that drives to it, so a sequence gets built as a side effect
+        # of the teaching you were doing anyway rather than as a second job
+        # afterwards with the robot already moved on.
+        self.recording = None
 
     # -- helpers ----------------------------------------------------------
 
@@ -500,6 +522,43 @@ class Pendant:
 
     def _report(self, ok, why, did):
         print(f'  {did}' if ok else f'  FAILED: {why}')
+
+    def _record(self, kind, arg, arm=None, note=''):
+        """Append a step to the pipeline being recorded, if there is one.
+
+        Called from the ordinary commands, so recording is something they do
+        as well as their job rather than a separate mode with its own verbs.
+        No-op when not recording, which keeps the call sites free of `if`.
+
+        Written to disk immediately, for the reason `save` is: the sequence
+        somebody just drove the robot through is not reproducible by
+        re-running anything.
+        """
+        if self.recording is None:
+            return None
+        step = self.recording.append(Step(kind, arg, note, arm))
+        self.store.save()
+        print(f'  + step {len(self.recording)}: {step.describe()}')
+        return step
+
+    def _auto_point_name(self):
+        """Next free `<pipeline>_NN` name, for `save` with no name given.
+
+        So that recording a sequence is jog, save, jog, save -- naming every
+        waypoint is work that mostly produces names nobody reads, and the
+        ones that matter can still be given explicitly.
+
+        Skips names already taken rather than overwriting: re-recording a
+        pipeline over an old one must not silently redefine the old one's
+        points, which are what it still runs on.
+        """
+        for n in range(1, 1000):
+            name = f'{self.recording.name}_{n:02d}'
+            if name not in self.store:
+                return name
+        raise ValueError(
+            f'cannot find a free name under {self.recording.name}_NN; '
+            f'name this point explicitly')
 
     # -- commands ---------------------------------------------------------
 
@@ -591,9 +650,12 @@ class Pendant:
                                     self.store.group))
 
     def cmd_save(self, args, overwrite=False):
-        if not args:
+        if not args and self.recording is None:
             raise ValueError('save needs a name')
-        name, note = args[0], ' '.join(args[1:])
+        if args:
+            name, note = args[0], ' '.join(args[1:])
+        else:
+            name, note = self._auto_point_name(), ''
         if name in self.store and not overwrite:
             raise ValueError(
                 f"'{name}' already exists. Use `resave {name}` to replace it, "
@@ -628,6 +690,9 @@ class Pendant:
         # thing here that cannot be reproduced by re-running something.
         self.store.save()
         print(f'  saved {name} -> {self.store.path}')
+        # Recorded AFTER the point exists, so a pipeline can never contain a
+        # goto to a point that was never written.
+        self._record('goto', name)
 
     def cmd_resave(self, args):
         self.cmd_save(args, overwrite=True)
@@ -656,6 +721,11 @@ class Pendant:
         print(f'  moving to {point.name}{on} ...')
         ok, why = self.node.move_to_joints(target, point.name, arm)
         self._report(ok, why, f'at {point.name}')
+        # Only a move that arrived becomes a step. Recording a failed one
+        # would write a pipeline whose first run is already known not to
+        # work, and the operator has just been told it failed.
+        if ok:
+            self._record('goto', point.name)
 
     def _arm_for(self, point):
         """Return the arm a stored point belongs to, by group then joints."""
@@ -751,12 +821,30 @@ class Pendant:
     def cmd_open(self, args):
         ok, why = self.node.command_gripper(0.0, self.arm)
         self._report(ok, why, f"{self.arm.label}'s gripper opening")
+        if ok:
+            self._record('grip', 0.0, self.arm.key)
 
     def cmd_close(self, args):
         pos = self._number(args[0], 'gripper position') if args else 0.5
         ok, why = self.node.command_gripper(pos, self.arm)
         self._report(ok, why,
                      f"{self.arm.label}'s gripper closing to {pos:.3f}")
+        if ok:
+            self._record('grip', pos, self.arm.key)
+
+    def cmd_wait(self, args):
+        """Pause, and record the pause when recording.
+
+        Interactively this is nearly useless on its own; it exists so that a
+        settle a person puts into a sequence by pausing is a settle the
+        replay also performs. The alternative is a pipeline that runs the
+        steps back to back and fails on the one grasp that needed a moment.
+        """
+        seconds = self._number(args[0], 'wait') if args else 1.0
+        step = Step('wait', seconds)     # validates the bound before sleeping
+        print(f'  waiting {step.arg:g}s ...')
+        time.sleep(step.arg)
+        self._record('wait', step.arg)
 
     def cmd_tool(self, args):
         """Select the point on the end effector that rotations turn about."""
@@ -800,8 +888,280 @@ class Pendant:
             print(f'  # {name} ({arm.label}){note}')
             print(f'  approach_joints=[{values}],')
 
+    # -- pipelines --------------------------------------------------------
+
+    def _pipeline(self, name):
+        try:
+            return self.store.pipelines[name]
+        except KeyError:
+            known = ', '.join(sorted(self.store.pipelines)) or '(none)'
+            raise ValueError(
+                f"no pipeline named '{name}' in {self.store.path}. "
+                f'Known: {known}') from None
+
+    def _step_arm(self, step):
+        """Name the arm a gripper step drives.
+
+        Falls back to the selected arm for a hand-written step that does not
+        say which, and says so out loud. Refusing would make an obvious
+        one-line pipeline unusable for a missing field the reader can see is
+        missing; guessing in silence is how the wrong gripper opens while the
+        other one is holding a bottle.
+        """
+        if step.arm is None:
+            print(f'     (step does not say which arm; using '
+                  f'{self.arm.label})')
+            return self.arm
+        arm = ARMS.get(step.arm)
+        if arm is None:
+            raise ValueError(
+                f'step names arm {step.arm!r}; known: ' + ', '.join(ARMS))
+        return arm
+
+    def cmd_record(self, args):
+        """Start recording a pipeline, or report the one in progress."""
+        if not args:
+            if self.recording is None:
+                print('  not recording. `record NAME` starts a pipeline.')
+                return
+            print(f'  recording {self.recording.name} '
+                  f'({len(self.recording)} step(s)); `stop` ends it')
+            for index, step in enumerate(self.recording.steps, 1):
+                print(f'    {index:>2}. {step.describe()}')
+            return
+        if args[0].lower() == 'off':
+            self.cmd_stop([])
+            return
+        if self.recording is not None:
+            raise ValueError(
+                f'already recording {self.recording.name}; `stop` finishes '
+                f'it. Two at once would put every step into both.')
+        name, note = args[0], ' '.join(args[1:])
+        if name in self.store.pipelines:
+            raise ValueError(
+                f"'{name}' already exists. `pipeline rm {name}` first, or "
+                f'record under another name.')
+        self.recording = Pipeline(name, note=note)
+        # In the file from the start, not on `stop`. Same reasoning as
+        # saving a point immediately: a session at the robot is the one
+        # thing here that cannot be reproduced by re-running something, and
+        # that includes the order the points were taught in.
+        self.store.pipelines[name] = self.recording
+        self.store.save()
+        print(f'  recording {name}.')
+        print('  save, goto and the gripper commands now also append a step. '
+              'Jogs do not:')
+        print('  they are how you reach a point, and a relative move cannot '
+              'be replayed.')
+        print('  `save` with no name auto-names. `stop` when the sequence is '
+              'complete.')
+
+    def cmd_stop(self, args):
+        """Finish the pipeline being recorded."""
+        if self.recording is None:
+            raise ValueError('not recording; `record NAME` starts a pipeline')
+        done, self.recording = self.recording, None
+        if not len(done):
+            # An empty pipeline is clutter rather than data -- nothing was
+            # taught into it -- and leaving it behind means the next `record`
+            # of that name is refused by something holding no steps.
+            self.store.pipelines.pop(done.name, None)
+            self.store.save()
+            print(f'  {done.name} recorded no steps; discarded')
+            return
+        self.store.save()
+        print(f'  stopped. {done.name}: {len(done)} step(s) '
+              f'-> {self.store.path}')
+        missing = done.missing_points(self.store)
+        if missing:
+            print('  WARNING: it names points that no longer exist: '
+                  + ', '.join(missing))
+
+    def cmd_run(self, args):
+        """Replay a pipeline, stopping at the first step that fails."""
+        if not args:
+            raise ValueError('run needs a pipeline name')
+        dry = len(args) > 1 and args[1].lower() in ('dry', 'plan')
+        if self.recording is not None:
+            raise ValueError(
+                f'stop recording {self.recording.name} first -- running now '
+                f'would append the replay to it, step by step.')
+        pipeline = self._pipeline(args[0])
+        if not len(pipeline):
+            print(f'  {pipeline.name} has no steps')
+            return
+        missing = pipeline.missing_points(self.store)
+        if missing:
+            # Checked before anything moves. Finding out at step 9 of 11
+            # leaves the arm mid-sequence holding something.
+            raise ValueError(
+                f"{pipeline.name} names points that do not exist: "
+                f"{', '.join(missing)}")
+        print(f'  {"planning" if dry else "running"} {pipeline.name}: '
+              f'{len(pipeline)} step(s)')
+        for index, step in enumerate(pipeline.steps, 1):
+            head = f'  {index:>2}/{len(pipeline)}  {step.describe()}'
+            if dry:
+                print(head + self._dry_detail(step))
+                continue
+            print(head + ' ...')
+            ok, why = self._execute(step)
+            if not ok:
+                print(f'  STOPPED at step {index} of {len(pipeline)}: {why}')
+                return
+        print(f'  {"planned" if dry else "finished"} {pipeline.name}')
+
+    def _dry_detail(self, step):
+        """Say which arm a step would drive, for a dry run's step line."""
+        if step.kind == 'goto':
+            try:
+                return f'   -> {self._arm_for(self.store.get(step.arg)).label}'
+            except (ValueError, PointStoreError):
+                return '   -> unknown arm'
+        # Nothing for grip or wait: a grip step already carries its arm in
+        # describe(), and repeating it just makes the column noisy.
+        return ''
+
+    def _execute(self, step):
+        """Run one step. Returns (ok, why) like every other motion call."""
+        if step.kind == 'wait':
+            time.sleep(step.arg)
+            return True, ''
+        if step.kind == 'goto':
+            point = self.store.get(step.arg)
+            arm = self._arm_for(point)
+            target = dict(zip(arm.joints,
+                              point.joints_in_order(list(arm.joints))))
+            return self.node.move_to_joints(target, point.name, arm)
+        return self.node.command_gripper(step.arg, self._step_arm(step))
+
+    def _recording_or_refuse(self, doing):
+        """Return the pipeline being recorded, or explain why there is none."""
+        if self.recording is None:
+            raise ValueError(
+                f'not recording, so there is nothing to {doing}. '
+                f'`record NAME` starts a pipeline; to change a finished one, '
+                f'edit the YAML.')
+        return self.recording
+
+    def _list_pipelines(self, args):
+        if not self.store.pipelines:
+            print(f'  no pipelines yet in {self.store.path}')
+            return
+        for name in sorted(self.store.pipelines):
+            live = self.recording is not None and self.recording.name == name
+            print(('  * ' if live else '    ')
+                  + self.store.pipelines[name].describe()
+                  + ('   <- recording' if live else ''))
+
+    def _pipeline_show(self, args):
+        if not args:
+            raise ValueError('pipeline show needs a name')
+        pipeline = self._pipeline(args[0])
+        print('  ' + pipeline.describe())
+        for index, step in enumerate(pipeline.steps, 1):
+            print(f'    {index:>2}. {step.describe()}' + self._dry_detail(step))
+        missing = pipeline.missing_points(self.store)
+        if missing:
+            print('  missing points: ' + ', '.join(missing))
+
+    def _pipeline_rm(self, args):
+        if not args:
+            raise ValueError('pipeline rm needs a name')
+        name = args[0]
+        self._pipeline(name)
+        if self.recording is not None and self.recording.name == name:
+            raise ValueError(f'{name} is being recorded; `stop` first')
+        del self.store.pipelines[name]
+        self.store.save()
+        print(f'  removed pipeline {name}')
+
+    def _pipeline_step(self, args):
+        """Append a step by hand, for the ones no command produces."""
+        self._recording_or_refuse('add a step to')
+        if len(args) < 2:
+            raise ValueError('pipeline step needs a kind and a value, e.g. '
+                             '`pipeline step wait 0.5`')
+        kind, raw, note = args[0].lower(), args[1], ' '.join(args[2:])
+        if kind == 'goto':
+            self.store.get(raw)          # refuse a step to a point that is
+            self._record(kind, raw, None, note)   # not there
+            return
+        # Only grip needs an arm, and it takes the selected one -- the same
+        # arm `close` would have driven had it been typed instead.
+        self._record(kind, self._number(raw, kind),
+                     self.arm.key if kind == 'grip' else None, note)
+
+    def _pipeline_drop(self, args):
+        recording = self._recording_or_refuse('drop a step from')
+        if not len(recording):
+            raise ValueError(f'{recording.name} has no steps yet')
+        index = (int(self._number(args[0], 'step number')) if args
+                 else len(recording))
+        if not 1 <= index <= len(recording):
+            raise ValueError(f'no step {index}; {recording.name} has '
+                             f'{len(recording)}')
+        gone = recording.steps.pop(index - 1)
+        self.store.save()
+        print(f'  dropped step {index}: {gone.describe()}')
+
+    def _pipeline_export(self, args):
+        names = args or sorted(self.store.pipelines)
+        if not names:
+            print('  nothing to export')
+            return
+        for name in names:
+            self._export_pipeline(self._pipeline(name))
+
+    # Same shape as COMMANDS below, and for the same reason: one table that
+    # says what exists, so the error for an unknown word can list the real
+    # ones rather than repeating a hand-written list that drifts.
+    PIPELINE_SUBCOMMANDS = {
+        'show': _pipeline_show, 'rm': _pipeline_rm, 'del': _pipeline_rm,
+        'step': _pipeline_step, 'drop': _pipeline_drop,
+        'export': _pipeline_export,
+    }
+
+    def cmd_pipeline(self, args):
+        """List pipelines, or show, remove, extend, trim or export one."""
+        if not args:
+            self._list_pipelines(args)
+            return
+        verb, rest = args[0].lower(), args[1:]
+        handler = self.PIPELINE_SUBCOMMANDS.get(verb)
+        if handler is None:
+            raise ValueError(
+                f'no pipeline subcommand {verb!r}; try '
+                + ', '.join(sorted(self.PIPELINE_SUBCOMMANDS))
+                + ', or `pipeline` alone to list')
+        handler(self, rest)
+
+    def _export_pipeline(self, pipeline):
+        """Print a pipeline as a Python literal a script can run.
+
+        The same shape the steps have in the file, flattened into tuples,
+        because the thing somebody wants this for is turning a taught
+        sequence into an action server -- which is where all of these
+        sequences lived before there was anywhere else to put them.
+        """
+        note = f'  -- {pipeline.note}' if pipeline.note else ''
+        print(f'  # {pipeline.name}{note}')
+        print(f'  {pipeline.name.upper()} = [')
+        for step in pipeline.steps:
+            if step.kind == 'goto':
+                body = f"('goto', {step.arg!r}),"
+            elif step.kind == 'grip':
+                body = f"('grip', {step.arg:.4f}, {step.arm!r}),"
+            else:
+                body = f"('wait', {step.arg:g}),"
+            print(f'      {body}'
+                  + (f'  # {step.note}' if step.note else ''))
+        print('  ]')
+
     def cmd_file(self, args):
-        print(f'  {self.store.path}  ({len(self.store)} point(s))')
+        extra = (f', {len(self.store.pipelines)} pipeline(s)'
+                 if self.store.pipelines else '')
+        print(f'  {self.store.path}  ({len(self.store)} point(s){extra})')
 
     def cmd_help(self, args):
         print(HELP, end='')
@@ -812,6 +1172,9 @@ class Pendant:
         'goto': cmd_goto, 'jog': cmd_jog, 'open': cmd_open, 'close': cmd_close,
         'safety': cmd_safety, 'export': cmd_export, 'file': cmd_file,
         'tool': cmd_tool, 'arm': cmd_arm,
+        'record': cmd_record, 'stop': cmd_stop, 'run': cmd_run,
+        'wait': cmd_wait,
+        'pipeline': cmd_pipeline, 'pl': cmd_pipeline,
         'help': cmd_help, '?': cmd_help,
     }
 
@@ -834,7 +1197,7 @@ class Pendant:
             return True
         try:
             handler(self, args)
-        except (ValueError, PointStoreError) as exc:
+        except (ValueError, PointStoreError, PipelineError) as exc:
             # Expected, explained failures: a bad name, an out-of-range jog, a
             # point that does not exist. Print and carry on -- losing the
             # session over a typo would mean re-teaching everything.
@@ -853,7 +1216,13 @@ class Pendant:
                 # Every jog and every save goes to whichever one this says,
                 # and a pendant that makes you remember which is a pendant
                 # that will eventually drive the wrong arm into the counter.
-                line = input(f'teach[{self.arm.key}]> ')
+                # The pipeline being recorded goes in the prompt for the
+                # same reason the arm does: every save and every gripper
+                # command is going into it, and a mode you cannot see is a
+                # mode you forget you are in.
+                rec = ('' if self.recording is None
+                       else f' rec:{self.recording.name}')
+                line = input(f'teach[{self.arm.key}]{rec}> ')
             except EOFError:
                 print()
                 return

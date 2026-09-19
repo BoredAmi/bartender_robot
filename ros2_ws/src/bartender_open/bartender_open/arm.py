@@ -65,6 +65,43 @@ PLANNING_TIME_S = 5.0
 PLAN_ATTEMPTS = 6
 CARTESIAN_STEP = 0.005
 MIN_CARTESIAN_FRACTION = 0.95
+
+# HOW FAR A DESCENT MAY DIP ITS OWN ARM INTO THE WORKTOP. None of it.
+#
+# Both arm bases are bolted to the bar top, so in either arm's frame z = 0 IS
+# the counter surface (see the frame note in layout.py) and no part of a
+# working arm has any business below it.
+#
+# This is checked because the straight-line descents here run with
+# avoid_collisions=False -- deliberately, since they finish in contact with
+# the thing being picked up and a collision-aware path would refuse the last
+# few millimetres. The cost of that opt-out is that nothing else was looking
+# at the rest of the arm. Traced on the opener pick: compute_cartesian_path
+# returned 100% of the path, the controller reported "Goal reached,
+# success!", and the flange stopped 267mm from where it was sent at
+# (0.3291, 0.0208, 0.3406) instead of (0.365, 0, 0.077) -- identical to a
+# tenth of a millimetre across runs, because the descent was driving
+# b_wrist_1_link 22.7mm UNDER the bar and the arm simply jammed on it.
+# An IK probe at that grasp pose finds six branches, and four of them put
+# wrist_1 below the counter, so picking one by luck is the normal case.
+#
+# It is the approach configuration that decides which of those branches the
+# descent runs through, and approach_then already enumerates approaches and
+# asks each one whether the descent is reachable. This makes it ask the
+# second question too.
+DESCENT_FLOOR_Z = 0.0
+# Link ORIGINS, not geometry: a check on the origins is crude, and it is
+# enough, because an arm that has put a wrist origin under the worktop is
+# already far past grazing it. Sampling rather than every waypoint keeps the
+# cost to a dozen FK calls per candidate branch; a dip deep enough to stop
+# the arm is tens of millimetres wide and cannot hide between samples.
+DESCENT_SAMPLES = 12
+# Everything from the shoulder out. The base links cannot move, and the
+# fingers are checked through tool0, which they hang off.
+DESCENT_CHECK_LINKS = (
+    'shoulder_link', 'upper_arm_link', 'forearm_link',
+    'wrist_1_link', 'wrist_2_link', 'wrist_3_link', 'tool0',
+)
 ARM_SETTLE_VELOCITY = 0.01
 # Joint-space moves run at a third speed (see JOINT_MOVE_SCALING), so they
 # take correspondingly longer to come to rest.
@@ -603,8 +640,8 @@ class Arm:
                                        for a, b in zip(sol, base_seed)))
         return found
 
-    def cartesian_fraction(self, poses, start_joints=None) -> float:
-        """How much of a straight-line path is reachable, without moving.
+    def _cartesian_path(self, poses, start_joints=None):
+        """Ask move_group to lay out a straight-line path, without moving.
 
         start_joints says "suppose the arm were HERE". That is the opposite
         of what follow_cartesian does, and deliberately: there, the start
@@ -615,7 +652,7 @@ class Arm:
         judged before the arm is sent to it.
         """
         if not self.cartesian_client.wait_for_service(timeout_sec=10.0):
-            return -1.0
+            return None
         request = GetCartesianPath.Request()
         request.header.frame_id = self.frame
         request.group_name = self.group
@@ -628,9 +665,74 @@ class Arm:
             request.start_state.joint_state.name = list(self.joints)
             request.start_state.joint_state.position = [
                 float(v) for v in start_joints]
-        response = block_on(self.cartesian_client.call_async(request),
-                            timeout_sec=30.0)
+        return block_on(self.cartesian_client.call_async(request),
+                        timeout_sec=30.0)
+
+    def cartesian_fraction(self, poses, start_joints=None) -> float:
+        """How much of a straight-line path is reachable, without moving."""
+        response = self._cartesian_path(poses, start_joints)
         return -1.0 if response is None else response.fraction
+
+    def lowest_link_along(self, poses, start_joints=None):
+        """Lowest link origin the arm reaches while running a straight line.
+
+        Answers "and does it take the rest of the arm through the bar?",
+        which the fraction on its own does not -- see DESCENT_FLOOR_Z for the
+        run this was written for. Returns None when it cannot tell, and the
+        caller treats that as "no objection", because refusing to move on a
+        failed FK call would strand the sequence on a service hiccup.
+        """
+        response = self._cartesian_path(poses, start_joints)
+        if response is None or response.fraction < MIN_CARTESIAN_FRACTION:
+            return None
+        points = response.solution.joint_trajectory.points
+        names = list(response.solution.joint_trajectory.joint_names)
+        if not points or not names:
+            return None
+        if not self.fk_client.wait_for_service(timeout_sec=10.0):
+            return None
+        links = [self.prefix + ln for ln in DESCENT_CHECK_LINKS]
+        step = max(1, len(points) // DESCENT_SAMPLES)
+        # Always include the last point: it is the grasp itself, and it is
+        # the one waypoint the sampling must not skip.
+        sampled = list(points[::step]) + [points[-1]]
+        lowest, where = None, None
+        for point in sampled:
+            request = GetPositionFK.Request()
+            request.header.frame_id = self.frame
+            request.fk_link_names = links
+            request.robot_state.joint_state.name = names
+            request.robot_state.joint_state.position = list(point.positions)
+            reply = block_on(self.fk_client.call_async(request),
+                             timeout_sec=10.0)
+            if reply is None or not reply.pose_stamped:
+                return None
+            for link, stamped in zip(reply.fk_link_names, reply.pose_stamped):
+                z = stamped.pose.position.z
+                if lowest is None or z < lowest:
+                    lowest, where = z, link
+        if lowest is not None and lowest < DESCENT_FLOOR_Z:
+            self._log().warn(
+                f'{self.label}: this descent would put {where} '
+                f'{(DESCENT_FLOOR_Z - lowest) * 1000:.1f}mm under the '
+                f'counter top')
+        return lowest
+
+    def _descent_clears_counter(self, descent, name, index, total,
+                                start_joints=None) -> bool:
+        """Reject an approach whose descent would go through the bar top.
+
+        Being able to REACH the descent and being able to run it are
+        different questions, and until this was added only the first was
+        asked. See DESCENT_FLOOR_Z.
+        """
+        lowest = self.lowest_link_along(descent, start_joints)
+        if lowest is None or lowest >= DESCENT_FLOOR_Z:
+            return True
+        self._log().warn(
+            f'{self.label}: "{name}" branch {index + 1} of {total} reaches '
+            f'the descent but runs it through the counter; trying the next')
+        return False
 
     def approach_then(self, name: str, approach_xyz, then_xyz,
                       quat=SIDE_QUAT) -> bool:
@@ -660,6 +762,9 @@ class Arm:
         for index, solution in enumerate(candidates):
             if self.cartesian_fraction(descent, solution) < MIN_CARTESIAN_FRACTION:
                 continue
+            if not self._descent_clears_counter(descent, name, index,
+                                                len(candidates), solution):
+                continue
             if not self.move_to_joints(name, solution):
                 continue
             # Ask again, now from where the arm ACTUALLY is. The prediction
@@ -670,7 +775,9 @@ class Arm:
             # descent verified at 1.00 has come back at 0.05 once the arm was
             # standing there. Cheaper to ask than to find out by moving.
             self.wait_until_settled()
-            if self.cartesian_fraction(descent) >= MIN_CARTESIAN_FRACTION:
+            if (self.cartesian_fraction(descent) >= MIN_CARTESIAN_FRACTION
+                    and self._descent_clears_counter(descent, name, index,
+                                                     len(candidates))):
                 if index:
                     self._log().info(
                         f'{self.label}: "{name}" used IK branch {index + 1} '
@@ -736,26 +843,6 @@ class Arm:
                              f'{attempts} attempts')
             return None
         return best[1]
-
-    def move_to_pose(self, name: str, xyz, quat=SIDE_QUAT) -> bool:
-        """Move tool0 to a pose, via IK and a collision-checked joint move.
-
-        IK first and a JOINT goal second, rather than handing move_group a
-        pose goal, and the reason is wrap_to_pi above: a pose goal lets the
-        planner choose the branch, and the branch it chooses is regularly one
-        pressed against a joint limit that the following straight-line run-in
-        then cannot get off. Solving it here means the wrap can be applied
-        before the arm ever goes there.
-
-        The pose-goal path is kept as a fallback for the case where IK finds
-        nothing -- the sampling planner can sometimes reach a pose that the
-        analytic solver misses from one seed.
-        """
-        solution = self.solve_ik(xyz, quat)
-        if solution is not None:
-            return self.move_to_joints(name, solution)
-        self._log().warn(f'{self.label}: falling back to a pose goal for "{name}"')
-        return self._move_to_pose_goal(name, xyz, quat)
 
     def _move_to_pose_goal(self, name: str, xyz, quat=SIDE_QUAT) -> bool:
         """Plan a collision-checked path to a tool0 pose.
@@ -1016,18 +1103,33 @@ class Arm:
             reached = self.wait_for_gripper(command)
             held = gap_for_knuckle(reached)
             advance, previous = reached - previous, reached
+            # IS THE GRIPPER MOVING AT ALL? Asked first, before anything
+            # about widths, because a gripper that never budged answers every
+            # other question misleadingly.
+            #
+            # This check used to sit BELOW the width test, which made it
+            # unreachable in precisely the case it was written for: a gripper
+            # jammed at its open stop holds the pads 85.0mm apart, wider than
+            # any object here, so every step took the `continue` and the loop
+            # ran to GRIPPER_FULLY_CLOSED before reporting "closed all the
+            # way without meeting anything". Traced on an opener pick that
+            # failed with the knuckle reading -0.000 from the pre-close
+            # onwards: the fingers had never moved, and the message still
+            # described where the opener was.
+            if command - reached > GRIPPER_UNRESPONSIVE:
+                self._log().error(
+                    f'{self.label}: gripper is not moving -- commanded '
+                    f'{command:.3f} rad and the joint is at {reached:.3f}, '
+                    f'{(command - reached):.3f} behind, with the pads '
+                    f'{held * 1000:.1f}mm apart. Nothing '
+                    f'{object_width * 1000:.1f}mm wide can be stopping them; '
+                    f'it is the gripper not following.')
+                return None
             # Nothing counts as contact until the pads are at least as close
             # together as the object is wide. Before that, a joint short of
             # its command is a joint that has not caught up.
             if held > object_width + GRASP_LOOSE:
                 continue
-            if command - reached > GRIPPER_UNRESPONSIVE:
-                self._log().error(
-                    f'{self.label}: gripper is not moving -- commanded '
-                    f'{command:.3f} rad and the joint is at {reached:.3f}, '
-                    f'{(command - reached):.3f} behind. This is not an '
-                    f'object in the way; it is the gripper not following.')
-                return None
             if (command - reached > GRIPPER_STALL_GAP
                     and advance < GRIPPER_CONFIRM_MOVE):
                 if held < object_width - GRASP_PENETRATION:

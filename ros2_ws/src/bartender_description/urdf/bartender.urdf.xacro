@@ -43,10 +43,11 @@
   Both arms hang off the same `world` link, which is what the ros_gz `create`
   call positions when it spawns this description - so `world` is NOT the
   Gazebo world origin, it is wherever arm A was spawned (see
-  bartender_gazebo/launch/sim.launch.py: -0.4 0 0.9, i.e. on the counter top
-  at its left end). Arm B's origin below is therefore relative to arm A's
-  base, not to the world, and ARM_B_ORIGIN in bartender_gazebo's world file
-  has to agree with it. bartender_open/test_layout.py checks that they do.
+  bartender_gazebo/launch/sim.launch.py: -0.45 -0.40 0.9, i.e. at one end of the bar
+  top). Arm B's origin below is therefore
+  relative to arm A's base, not to the world, and ARM_B_ORIGIN in
+  bartender_open/layout.py has to agree with it. test_layout.py checks that
+  they do.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="bartender_ur5e">
 
@@ -58,18 +59,31 @@
   <xacro:arg name="sim_ignition" default="true"/>
   <xacro:arg name="use_fake_hardware" default="false"/>
 
-  <!-- Arm B's base, in arm A's base frame. 0.55 forward and 0.62 across puts
-       it on its own pedestal behind the counter, facing back across it: the
-       two arms then share the middle of the counter, which is where the
-       bottle is held for opening, without either one's base being inside the
-       other's working volume.
+  <!-- Arm B's base, in arm A's base frame. 1.06 down the bar and 0.80
+       across, turned through pi so the two arms FACE EACH OTHER along the
+       bar top with the bottle line running between them.
 
-       yaw -pi/2 turns arm B's +x to face the counter (world -y). Nothing
-       forces that - a UR base's yaw only decides where joint angles point -
-       but it keeps arm B's shoulder-pan near zero while it works over the
-       counter, which keeps it out of its own wrist singularities. -->
-  <xacro:property name="arm_b_xyz" value="0.55 0.62 0.0"/>
-  <xacro:property name="arm_b_rpy" value="0 0 -1.5707963267948966"/>
+       That is a change. Arm B used to sit at 0.55 forward, 0.62 across and
+       yawed -pi/2, on a pedestal beside a counter too small to carry it.
+       The bar top is now big enough for both, and the yaw is what took the
+       longest to settle, so it is worth saying why it is pi and not zero.
+
+       Standing the two arms side by side, both facing the same way, was
+       tried first: it makes the frames differ by a pure translation, which
+       is tidy. It does not work. A UR5e carrying this gripper is not
+       symmetric about its own centreline: the wrist hangs to one side, so
+       with the fixed side-grasp tool orientation a target at negative y in
+       the arm's frame is reached by swinging the shoulder a long way past
+       the target's bearing. Parallel arms put the shared beer at positive y
+       for one arm and negative y for the other, and measured, the negative
+       one is the one that fails: arm B could not descend onto the cap.
+
+       Facing them at each other flips arm B's y axis, so the beer between
+       them is at +0.40 in BOTH frames and both arms work it from the same
+       well conditioned pose. The measurements behind that are in
+       bartender_open/layout.py under APPROACH_WINDOW. -->
+  <xacro:property name="arm_b_xyz" value="1.06 0.80 0.0"/>
+  <xacro:property name="arm_b_rpy" value="0 0 3.141592653589793"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>

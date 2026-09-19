@@ -237,11 +237,6 @@ class Params:
 
     # ---- derived: widths -------------------------------------------------
     @property
-    def pocket_half_width(self) -> float:
-        """Half the chord the neck pocket cuts in the front face."""
-        return self.pocket_r * math.sin(self.half_arc)
-
-    @property
     def collar_half_angle(self) -> float:
         """Half-angle the collar pocket subtends: wider, being a bigger circle
         cut by the same front-face plane."""

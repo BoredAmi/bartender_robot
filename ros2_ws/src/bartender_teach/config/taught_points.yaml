@@ -25,6 +25,10 @@
 # start with `b_`. The pendant's `arm a` / `arm b` chooses which one you are
 # driving, `list` shows both, and `goto` uses whichever arm the point names --
 # never the selected one, because a point belongs to exactly one arm.
+#
+# The two arms now stand side by side on one bar top, parallel and 0.75
+# apart, so b_home holds the same angles as home. That is why the two look
+# like a copy-paste error and are not; see bartender_open/layout.py.
 frame: base_link
 group: ur_manipulator
 eef_link: tool0
@@ -33,16 +37,15 @@ points:
     group: b_ur_manipulator
     joints:
       b_shoulder_pan_joint: 0.0
-      b_shoulder_lift_joint: -2.0
-      b_elbow_joint: 1.6
-      b_wrist_1_joint: -1.17
-      b_wrist_2_joint: -1.5707963
+      b_shoulder_lift_joint: -1.57
+      b_elbow_joint: 0.0
+      b_wrist_1_joint: -1.57
+      b_wrist_2_joint: 0.0
       b_wrist_3_joint: 0.0
     note: >-
-      bartender_open ARM_B_HOME, and the SRDF's b_home. NOT a copy of arm A's:
-      arm B stands across the counter facing back at it, so arm A's angles
-      would fold it into the worktop. Elbow up and wrist tucked keeps it clear
-      of the counter and of arm A's reach.
+      bartender_open ARM_B_HOME, and the SRDF's b_home. The same angles as
+      arm A's home, because the two arms are parallel on one bar top and
+      differ by a pure translation. Folded up clear of the counter.
   home:
     group: ur_manipulator
     joints:
@@ -58,23 +61,29 @@ points:
   whiskey_approach:
     group: ur_manipulator
     joints:
-      shoulder_pan_joint: 0.079
-      shoulder_lift_joint: -1.905
-      elbow_joint: 2.337
-      wrist_1_joint: -0.432
-      wrist_2_joint: 1.65
+      shoulder_pan_joint: -0.1905
+      shoulder_lift_joint: -2.1401
+      elbow_joint: 2.1357
+      wrist_1_joint: 0.0044
+      wrist_2_joint: 1.3803
       wrist_3_joint: 0.0
     note: >-
       WHISKEY.approach_joints; 0.30 above the grasp, clear of the bottle's
-      shoulder. Chosen from the IK branches that also keep every link above
-      the counter -- rejected ones put a forearm 166mm below it.
+      shoulder. Re-derived for the redesigned bar, where the whiskey took
+      the line slot at base_link (0.53, +0.10). Chosen from the IK branches
+      that also keep every link above the counter. Both this and the cola's
+      sit inside layout.APPROACH_WINDOW, the band of base_link y where the
+      shoulder reaches a side grasp near the target's own bearing instead of
+      swinging a long way past it.
   cola_approach:
     group: ur_manipulator
     joints:
-      shoulder_pan_joint: -0.335
-      shoulder_lift_joint: -1.482
-      elbow_joint: 1.977
-      wrist_1_joint: -0.494
-      wrist_2_joint: 1.236
+      shoulder_pan_joint: 0.4901
+      shoulder_lift_joint: -1.7912
+      elbow_joint: 2.0955
+      wrist_1_joint: -0.3043
+      wrist_2_joint: 2.0609
       wrist_3_joint: 0.0
-    note: COLA.approach_joints; same idea, over the cola station at x=0.75
+    note: >-
+      COLA.approach_joints; same idea, over the cola's slot at base_link
+      (0.53, +0.25). Re-derived with the whiskey for the redesigned bar.

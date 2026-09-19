@@ -2,10 +2,23 @@
 
 A two-armed bartender -- two UR5e arms, each with a Robotiq 2F-85 -- taught
 to pour a drink and to open a beer in Gazebo Sim simulation, before anything
-touches a real robot or a user-facing interface. See [PLAN.md](PLAN.md) for
-the full phased plan; this file covers setup and day-to-day commands.
+touches a real robot or a user-facing interface. This file covers setup and
+day-to-day commands.
 
-The two arms are **not** named symmetrically. Arm A keeps ur_description's
+**New here, or building something on top of this?** Start with
+[docs/](docs/README.md):
+[ARCHITECTURE](docs/ARCHITECTURE.md) (how it fits together and where to add
+things), [CONTROL_API](docs/CONTROL_API.md) (the proposed HTTP/JSON API for
+a VLM or other non-ROS caller), [ROADMAP](docs/ROADMAP.md) (what works, what
+is blocking autonomy, what is next) and
+[CONTRIBUTING](docs/CONTRIBUTING.md) (build, test, and the house rules).
+[PLAN.md](PLAN.md) is the superseded Phase 1 plan, kept as history.
+
+The two arms stand on one counter facing each other down it, with the bottle
+line between them; see "The bar" below for the layout and for the three
+measurements that fix it.
+
+They are **not** named symmetrically. Arm A keeps ur_description's
 bare joint and link names (`shoulder_pan_joint`, `tool0`, `base_link`) and
 arm B has everything under a `b_` prefix. That is deliberate and the
 reasoning is at the top of
@@ -62,10 +75,59 @@ any of the above packages later and something stops rendering.
   checked without a simulator.
 - `bartender_teach` -- teach pendant, GUI and tool frames.
 - `models/` -- Gazebo models. Hand-written: `bar_counter`,
-  `jack_daniels_bottle`, `cola_bottle`, `serving_glass`, `arm_pedestal`.
+  `jack_daniels_bottle`, `cola_bottle`, `serving_glass`.
   Generated, by the scripts in `bartender_gazebo/scripts/` -- edit those and
   re-run them, not the SDF: `whiskey_stand`, `cola_stand`, `beer_stand`,
   `beer_bottle`, `beer_cap`, `bottle_opener`, `opener_holster`.
+
+## The bar
+
+One counter, 1.76 x 1.6, top at world z = 0.9, with **both arms bolted to
+it**. Arm A stands at one end facing down the bar and arm B at the other
+facing back at it; between them runs a five-slot **bottle line** at a 0.15
+pitch, and each arm has its own working station off the line -- the glass
+for arm A, the opener's holster for arm B.
+
+```
+   y
+   ^
++0.8|  +-----------------------------------------------+  counter edge
+    |  |                                               |
++0.4|  |                      []  holster        (B)   |  arm B, faces -x
+    |  |                      o   free                 |
+    |  |                      o   free                 |
+ 0.0|  |                      #   beer   <- both arms  |
+    |  |                      #   cola                 |
+    |  |                      #   whiskey              |
+-0.4|  |  (A)                                          |  arm A, faces +x
+    |  |                        U   glass              |
+-0.8|  +-----------------------------------------------+
+    +--------------------------------------------------------> x
+      -0.45                 0.08 0.20            0.61
+                            line
+```
+
+Three things about it are not free choices, and each is written up where it
+is decided:
+
+- **Why the line runs across the arms rather than along them.** The pour
+  grasps from the side, running the gripper in along the arm's own +x, so
+  slots at a common x each get a clear lane and no bottle stands behind
+  another.
+- **Why it is five slots and not nine** -- `APPROACH_WINDOW` in
+  `bartender_open/layout.py`. A UR5e carrying this gripper is not symmetric
+  about its own centreline, so the band of the line an arm can actually take
+  a bottle off is about 0.40 wide. Past it the shoulder swings a long way
+  past the target's bearing, and measured, a bottle grasped from such a pose
+  slips back out during the lift. The two arms face each other so their
+  bands overlap in the middle, which is what makes all five slots servable
+  and the shared beer well conditioned for both.
+- **Why the glass is off every slot's y.** The pour lays the bottle back
+  0.30 behind the glass at 0.18 above the counter, below the top of anything
+  standing in the line, so the pour sweeps across the line. The glass sits
+  0.25 clear of the nearest bottle, and the carry to it goes over the line
+  rather than through it (`CARRY_MOUTH_Z`, raised from 0.40 to 0.61 for
+  exactly this).
 
 ## Running the sim
 
@@ -129,6 +191,30 @@ transient ament-index/discovery glitch, not a real error -- just retry it.
   either arm; the `pour_drink` action runs its whole pick -> tilt -> pour ->
   return cycle; the `open_bottle` action runs the two-armed sequence above
   and takes the cap off.
+- **On the redesigned bar** (the counter, the bottle line and both arms'
+  positions all moved), re-measured from fresh simulators: `pour_drink`
+  2/2 full whiskey-and-cokes and `open_bottle` 2/2 caps off. The grips came
+  back at the values the old layout recorded -- whiskey clamped at 0.0893
+  and 0.0888 rad against 0.0900 before, cola at 0.2623 against 0.2650 --
+  which is the check that matters, because if the move had changed where
+  the pads meet those bottles those numbers would have moved with it.
+- One of the two opens is the best this project has recorded: the bell
+  seated the full 21mm, 0.4mm off the cap's centre, with the bottle moving
+  **0.1mm** while being pushed on, where previous successful runs moved
+  3.7-19.5mm. Most of that is a bug the redesign flushed out rather than
+  the layout itself -- see the next point.
+- **`bartender_open` never put the counter into the planning scene**, on
+  the grounds that `bartender_pour` publishes it. An open goal on a freshly
+  started stack has no pour behind it, so there was no counter, and MoveIt
+  plans through a worktop it has not been told about. It bit immediately on
+  the new layout: arm B reached for the opener with its forearm 236mm BELOW
+  the counter top and its gripper inside the worktop, and reported "fingers
+  closed all the way without meeting anything 24.0mm wide", which is an
+  honest description of a gripper jammed in a table. `bartender_open` now
+  publishes the bar top itself, from the same numbers `bartender_pour` uses.
+- Still true, and still the largest defect in the pour: the cola's
+  place-and-release. It was thrown or left leaning in most runs before the
+  redesign and it still is.
 - `open_bottle` succeeded in **4 of 8** consecutive runs on the current
   31mm pads, against **6 of 8** on the 30mm pads they replaced. Each run is
   from a fresh simulator. At eight runs a side those two rates are not
