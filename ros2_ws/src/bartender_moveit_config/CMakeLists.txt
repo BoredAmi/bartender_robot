@@ -14,6 +14,15 @@ install(
 )
 
 if(BUILD_TESTING)
+  # pep257 runs as a pytest test rather than through ament_lint_auto, only
+  # to get at its --ignore list: ament's defaults leave D213 ON while
+  # ignoring D212, which between them require a docstring's summary to start
+  # on the SECOND line -- the opposite of the convention every file in this
+  # repo follows. Same arrangement as bartender_description, same file.
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(pep257_repo_style test/test_pep257.py)
+  set(ament_cmake_pep257_FOUND TRUE)
+
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

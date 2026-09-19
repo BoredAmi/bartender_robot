@@ -9,7 +9,9 @@
 
   <depend>rclpy</depend>
   <depend>bartender_pour_interfaces</depend>
+  <depend>bartender_teach</depend>
   <depend>moveit_msgs</depend>
+  <depend>shape_msgs</depend>
   <depend>control_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>tf2_ros</depend>

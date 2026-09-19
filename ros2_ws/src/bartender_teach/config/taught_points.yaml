@@ -1,0 +1,80 @@
+# Robot points taught with `ros2 run bartender_teach teach`.
+#
+# Angles are RADIANS. `joints` is a mapping so that joint order can never be
+# lost; `pose` is the forward kinematics at the moment the point was recorded
+# and is informational only -- nothing replays it, so editing it does nothing.
+#
+# Safe to hand-edit. The tool rewrites this file wholesale on save, so
+# comments added below this header will not survive a save from the tool.
+#
+# ---------------------------------------------------------------------------
+# These four were NOT taught with the pendant -- they are the literals that
+# were already in bartender_pour/pour_action_server.py and bartender_open's
+# layout.py, transcribed here so there is something to `goto` and `show` on a
+# fresh workspace, and so the file format has a worked example. They carry no
+# `pose:` for that reason: nothing has run FK on them. Re-save any of them
+# from the pendant and it will pick one up.
+#
+# Both servers DO read this file now, preferring a point named here over their
+# own literal. The literals are kept so a bare or broken workspace still runs,
+# and test_seeded_points.py insists the two copies match -- so retuning a pose
+# means editing the literal too, and the test tells you which one you missed.
+#
+# TWO ARMS. Points carry their own `group:`. Arm A's is ur_manipulator, which
+# is also this file's default; arm B's is b_ur_manipulator and its joints all
+# start with `b_`. The pendant's `arm a` / `arm b` chooses which one you are
+# driving, `list` shows both, and `goto` uses whichever arm the point names --
+# never the selected one, because a point belongs to exactly one arm.
+frame: base_link
+group: ur_manipulator
+eef_link: tool0
+points:
+  b_home:
+    group: b_ur_manipulator
+    joints:
+      b_shoulder_pan_joint: 0.0
+      b_shoulder_lift_joint: -2.0
+      b_elbow_joint: 1.6
+      b_wrist_1_joint: -1.17
+      b_wrist_2_joint: -1.5707963
+      b_wrist_3_joint: 0.0
+    note: >-
+      bartender_open ARM_B_HOME, and the SRDF's b_home. NOT a copy of arm A's:
+      arm B stands across the counter facing back at it, so arm A's angles
+      would fold it into the worktop. Elbow up and wrist tucked keeps it clear
+      of the counter and of arm A's reach.
+  home:
+    group: ur_manipulator
+    joints:
+      shoulder_pan_joint: 0.0
+      shoulder_lift_joint: -1.57
+      elbow_joint: 0.0
+      wrist_1_joint: -1.57
+      wrist_2_joint: 0.0
+      wrist_3_joint: 0.0
+    note: >-
+      HOME_JOINTS in bartender_pour and ARM_A_HOME in bartender_open, and the
+      SRDF's home state. Arm A folded up out of the way.
+  whiskey_approach:
+    group: ur_manipulator
+    joints:
+      shoulder_pan_joint: 0.079
+      shoulder_lift_joint: -1.905
+      elbow_joint: 2.337
+      wrist_1_joint: -0.432
+      wrist_2_joint: 1.65
+      wrist_3_joint: 0.0
+    note: >-
+      WHISKEY.approach_joints; 0.30 above the grasp, clear of the bottle's
+      shoulder. Chosen from the IK branches that also keep every link above
+      the counter -- rejected ones put a forearm 166mm below it.
+  cola_approach:
+    group: ur_manipulator
+    joints:
+      shoulder_pan_joint: -0.335
+      shoulder_lift_joint: -1.482
+      elbow_joint: 1.977
+      wrist_1_joint: -0.494
+      wrist_2_joint: 1.236
+      wrist_3_joint: 0.0
+    note: COLA.approach_joints; same idea, over the cola station at x=0.75

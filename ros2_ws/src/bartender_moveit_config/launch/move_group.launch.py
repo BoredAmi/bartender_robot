@@ -1,5 +1,6 @@
-"""Start MoveIt's move_group node (+ optional RViz) for the bartender
-UR5e + Robotiq 2F-85, against the controllers spawned by
+"""Start MoveIt's move_group node, and optionally RViz.
+
+Serves both arms, against the controllers spawned by
 bartender_bringup/launch/bartender_sim.launch.py.
 
 Hand-written instead of MoveIt-Setup-Assistant-generated -- see
@@ -35,10 +36,17 @@ def generate_launch_description():
         DeclareLaunchArgument('launch_rviz', default_value='true'),
     ]
 
+    # Must render the same way bartender_gazebo/launch/sim.launch.py does --
+    # through render_bartender_urdf.py, which grooves the gripper pads -- or
+    # MoveIt would collision-check against a gripper the physics engine is not
+    # simulating.
     xacro_file = os.path.join(pkg_description, 'urdf', 'bartender.urdf.xacro')
+    render_script = os.path.join(pkg_description, 'scripts',
+                                 'render_bartender_urdf.py')
     robot_description = {
         'robot_description': ParameterValue(
-            Command([FindExecutable(name='xacro'), ' ', xacro_file, ' sim_ignition:=true']),
+            Command([FindExecutable(name='python3'), ' ', render_script, ' ',
+                     xacro_file, ' sim_ignition:=true']),
             value_type=str,
         )
     }
@@ -53,9 +61,11 @@ def generate_launch_description():
     # Passed as a file path (not parsed into a dict): ROS2's "/**:
     # ros__parameters:" wildcard YAML syntax is only resolved when a node
     # parameter is given a file path, not when pre-parsed into a plain dict.
-    robot_description_kinematics = os.path.join(pkg_moveit_config, 'config', 'kinematics.yaml')
+    robot_description_kinematics = os.path.join(pkg_moveit_config, 'config',
+                                                'kinematics.yaml')
     robot_description_planning = {
-        'robot_description_planning': load_yaml(pkg_moveit_config, os.path.join('config', 'joint_limits.yaml'))
+        'robot_description_planning': load_yaml(
+            pkg_moveit_config, os.path.join('config', 'joint_limits.yaml'))
     }
 
     ompl_planning_pipeline_config = {
@@ -79,7 +89,8 @@ def generate_launch_description():
         'moveit_simple_controller_manager': load_yaml(
             pkg_moveit_config, os.path.join('config', 'moveit_controllers.yaml')
         )['moveit_simple_controller_manager'],
-        'moveit_controller_manager': 'moveit_simple_controller_manager/MoveItSimpleControllerManager',
+        'moveit_controller_manager':
+            'moveit_simple_controller_manager/MoveItSimpleControllerManager',
     }
 
     trajectory_execution = {

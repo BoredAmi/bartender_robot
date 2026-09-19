@@ -13,6 +13,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PourDrink.action"
+  "action/OpenBottle.action"
   DEPENDENCIES action_msgs geometry_msgs
 )
 
