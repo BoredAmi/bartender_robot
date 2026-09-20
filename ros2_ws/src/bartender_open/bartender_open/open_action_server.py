@@ -1022,18 +1022,25 @@ class OpenActionServer(Node):
                 return self._fail(goal_handle,
                                   f'{arm.label} has no controllers')
         if not self.arm_b.go_home():
-            return self._fail(goal_handle, 'arm B would not go home')
+            return self._fail(
+                goal_handle, f'arm B would not go home{self._why(self.arm_b)}')
         if not self.arm_a.go_home():
-            return self._fail(goal_handle, 'arm A would not go home')
+            return self._fail(
+                goal_handle, f'arm A would not go home{self._why(self.arm_a)}')
 
         if not self._fetch_opener(step):
-            return self._fail(goal_handle, 'arm B could not pick up the opener')
+            return self._fail(
+                goal_handle,
+                f'arm B could not pick up the opener{self._why(self.arm_b)}')
         if not self._pick_up_beer(step):
-            return self._fail(goal_handle, 'arm A could not pick up the beer')
+            return self._fail(
+                goal_handle,
+                f'arm A could not pick up the beer{self._why(self.arm_a)}')
 
         pressed = self._press(step)
         if pressed is None:
-            return self._fail(goal_handle, 'the press did not run')
+            return self._fail(
+                goal_handle, f'the press did not run{self._why(self.arm_b)}')
         shift, depth, offset = pressed
 
         # The gate. Everything up to here was motion; this is the part that
@@ -1085,14 +1092,18 @@ class OpenActionServer(Node):
         for where, label in ((lifted, 'lift the opener off the cap'),
                              (drawn_back, 'draw the opener back')):
             if not self.arm_b.move_cartesian(where, label=label):
-                return self._fail(goal_handle, f'arm B could not {label}',
-                                  bottle_shift=shift)
+                return self._fail(
+                    goal_handle,
+                    f'arm B could not {label}{self._why(self.arm_b)}',
+                    bottle_shift=shift)
 
         step('tipping the cap off', 0.80)
         if not self._shed_cap():
-            return self._fail(goal_handle,
-                              'arm A could not tip the bottle to shed the cap',
-                              bottle_shift=shift)
+            return self._fail(
+                goal_handle,
+                f'arm A could not tip the bottle to shed the '
+                f'cap{self._why(self.arm_a)}',
+                bottle_shift=shift)
         time.sleep(CAP_SETTLE_S)
 
         displacement = self._cap_displacement()
@@ -1107,8 +1118,11 @@ class OpenActionServer(Node):
                 bottle_shift=shift, cap_displacement=displacement)
 
         if request.stow_after and not self._stow(step):
-            return self._fail(goal_handle, 'opened, but could not stow',
-                              bottle_shift=shift, cap_displacement=displacement)
+            return self._fail(
+                goal_handle,
+                f'opened, but could not stow'
+                f'{self._why_any(self.arm_a, self.arm_b)}',
+                bottle_shift=shift, cap_displacement=displacement)
 
         step('open', 1.0)
         goal_handle.succeed()
@@ -1120,6 +1134,32 @@ class OpenActionServer(Node):
         result.cap_displacement_m = float(displacement)
         result.bottle_shift_m = float(shift)
         return result
+
+    @staticmethod
+    def _why(arm):
+        """Append an arm's own last logged reason, if it left one.
+
+        The caller's own message here is a stage-level summary ("could not
+        pick up the opener"); the arm usually worked out something far more
+        specific when it happened -- a stalled gripper, a plan that only
+        reached 4% of its path -- and logged it. Before Arm.last_error
+        existed that reason went nowhere once the caller only checked
+        True/False, which is exactly the gap bartender_api's error-taxonomy
+        classifier exposed: two very different faults (GRIPPER_NOT_FOLLOWING
+        vs GRASP_STOPPED_WIDE) collapsed into the same coarse message here.
+        """
+        return f' ({arm.last_error})' if arm.last_error else ''
+
+    @staticmethod
+    def _why_any(*arms):
+        """Like _why, for a stage where more than one arm could be at fault.
+
+        _stow moves both arms in sequence, so a bare "could not stow" does
+        not say which one -- showing both candidates' own last reason is
+        honest about that ambiguity rather than guessing which arm to blame.
+        """
+        reasons = [f'{a.label}: {a.last_error}' for a in arms if a.last_error]
+        return f' ({"; ".join(reasons)})' if reasons else ''
 
     def _fail(self, goal_handle, message, bottle_shift=0.0,
               cap_displacement=0.0):

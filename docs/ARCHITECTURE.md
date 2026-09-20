@@ -12,7 +12,8 @@ worth writing down came from breaking one of them.
         operator            VLM / planner / other agent
             |                        |
             |  browser               |  JSON over HTTP        <- docs/CONTROL_API.md
-            |                        |     (PROPOSED, not built)
+            |                        |     (Phase B built; Phase C started --
+            |                        |      simple movement only)
    +--------v----------+    +--------v---------+
    |  teach pendant    |    |  bartender_api   |
    |  (GUI + terminal) |    |                  |
@@ -135,6 +136,7 @@ picked up and not poured. See `docs/ROADMAP.md`.
 | `bartender_pour` | the pour skill. **Arm A only**, plans in `base_link` |
 | `bartender_open` | the beer-opening skill, both arms — and `layout.py` |
 | `bartender_teach` | teach pendant (terminal + browser), tool frames, taught points and pipelines |
+| `bartender_api` | HTTP/JSON control API: `GET /world`, `GET /state`, `POST /can`, error taxonomy (read-only), plus `POST /move/point`, `POST /move/jog`, `POST /gripper` (simple movement, over `Pendant.dispatch()`). See `docs/CONTROL_API.md` |
 | `models/` | Gazebo models; several are **generated** — edit the script, re-run it, don't hand-edit the SDF |
 | `fingertip/` | a parametric CadQuery generator for a neck-hooking fingertip (standalone, own venv) |
 

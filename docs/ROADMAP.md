@@ -21,7 +21,7 @@ autonomy" below before assuming a green run means much — a single run is
 weak evidence here, deliberately.
 - **Teach pendant** — terminal and browser, two arms, tool centre points,
   taught points, and recorded pipelines.
-- **1018 tests**, none of which need a robot.
+- **1091 tests**, none of which need a robot.
 - Two recordings of successful runs in `recordings/`.
 
 ## What is actually blocking autonomy
@@ -183,29 +183,101 @@ gone, a smaller one is not.** `beer settled after 6.2s` confirmed the
 swing is real and multi-second, exactly as measured. But the first press
 attempt still landed 12.8mm off centre against a cap that had been sitting
 motionless the whole time (checked directly against its own logged pose,
-unchanged across the descent) -- so this was arm B's own Cartesian
-execution missing its target, not the beer moving. The chamfer partially
-corrected it, visibly dragging the cap sideways as the bell made contact,
-down to 5.9mm off centre on the second attempt (inside SEAT_OFFSET_MAX),
-but the bell only reached 6.9mm of its 21mm travel: at ~11mm of aim error
-it seems to wedge against the cap's edge rather than slide home, and the
-6mm of further push could only recover 1.8mm more before stalling. Arm A
-held the beer fine throughout (1.9mm of shift, an order below
-BOTTLE_SHIFT_MAX) -- so this run's failure is now cleanly isolated to
-arm B's aim, with nothing else confounding it.
+unchanged across the descent). The chamfer partially corrected it, down
+to 5.9mm off centre on the second attempt (inside SEAT_OFFSET_MAX), but
+the bell only reached 6.9mm of its 21mm travel.
 
-That 11mm is well above the "lands within about 3mm" this file assumed
-elsewhere, and it was previously invisible under the much larger swing
-error. Not yet explained: whether it is IK/Jacobian conditioning specific
-to this pose, something about the `approach_then` branch chosen, or
-something else -- it needs the same kind of direct measurement the swing
-got, and one traced run is not enough to know if it is even the same size
-next time.
+A first guess -- recorded here and then disproved, because it would have
+sent the next investigation the wrong way -- was that this was arm B's
+own Cartesian execution missing its target. It was not. Three direct
+diagnostics against the running sim (`press_precision.py`,
+`opener_grip_check.py`, `loaded_precision.py`, all in the scratchpad,
+none committed) checked it out from every angle: the bare flange lands
+within 1mm of the exact xy that failed; the opener sits within 2mm of
+what OPENER_GRIP_Z predicts, statically; it does not swing on its own
+grip during the transit; and even carrying the real opener, driven
+straight at that exact failed xy with no beer or cap involved at all, the
+opener's own ground-truth pose landed 1.6mm from the target. Arm B's
+kinematics are not the problem.
 
-**Exit:** three consecutive opens succeed. Not met. Next thing to
-measure: how repeatable that ~11mm is across runs, and whether it
-tracks a known conditioning region the way APPROACH_WINDOW's pan/bearing
-table already does for reachability.
+**What is actually happening: the beer does not just swing, it can hang
+at a sustained, undamped tilt, and `_wait_for_beer_to_settle` cannot wait
+that out because there is nothing to wait for.** Found by adding
+orientation logging (`pose_log2.py`) alongside position, because the
+position-only trace could not distinguish "still moving" from "moving in
+a circle around a level rest point." A clean traced run ("clean1") shows
+it directly: after the lift the bottle's tilt does not decay to zero, it
+settles into a periodic oscillation between roughly 2.3 degrees and 6.3
+degrees, in lock-step with a ~30mm swing in x, that is *still going after
+15 seconds* -- long enough that `_wait_for_beer_to_settle` hit its own
+timeout (`beer had not settled within 15s; aiming at it anyway`, logged
+exactly as designed) and aimed at whatever the swing gave it. The press
+then landed 50.8mm off centre, and continued contact with the swinging
+bottle drove the tilt as high as 31 degrees before the sequence gave up.
+A tilted cap presents a non-horizontal top surface to a bell that only
+ever descends straight down, so even a correctly-centred xy aim can catch
+the cap's edge first -- which is a second, independent way to miss beyond
+simply aiming at a stale position, and no amount of extra settle-margin
+fixes it if the "settled" state itself is a moving average.
+
+The three traced+tilt-logged runs line up with how hard arm A's pads bit
+into the neck: 1.7mm of bite damped out in ~2s and pressed cleanly
+(pre-fix dfix_p1); 2.8mm of bite took 6.2s to mostly damp and left an
+11mm residual (dfix_p2); 3.2mm of bite never damped at all inside 15s and
+produced the 54.8mm miss above (clean1). More interpenetration in the
+grasp looks like a springier, less-damped pivot for the bottle to hang
+from -- consistent with an underdamped pendulum, not proof of one. This
+is not yet a fix, only a much better-aimed description of the failure:
+waiting longer will not help a system that is not decaying, and the next
+real candidate is changing the grip or the lift itself (a firmer or
+softer squeeze, a slower lift, or actively damping the swing) rather than
+reading the clock differently. That needs its own measurement before
+committing to one.
+
+One unrelated finding from this session, worth recording so it does not
+cost someone else the debugging time it cost here: a fresh diagnostic run
+("tilt1") came back with an obviously-broken 365mm offset, identical
+across both retry attempts. The cause was not the sim -- it was seven
+`watch_tilt.py` processes from an unrelated earlier session, still
+running 14+ hours later and loading the machine to 7-8. Killed by PID
+(never by `pkill -f` pattern; see CONTRIBUTING.md), and the very next run
+on the same, now-idle machine came back with the physically-plausible
+54.8mm/17.8mm of "clean1" above. **Check `ps`/`uptime` before trusting a
+number that looks too strange to be physical.**
+
+**A first look at GRIPPER_SQUEEZE, isolated from the full open sequence:**
+one clean grasp-and-lift trial per value, each on a freshly relaunched
+sim so a disturbed bottle from a previous trial can't confound the next
+one (`squeeze_vs_swing.py`, scratchpad, not committed):
+
+| GRIPPER_SQUEEZE | peak tilt over 12s | x-range |
+|---|---|---|
+| 0.10 | 1.68 deg | 7.4mm |
+| 0.18 (current) | 5.92 deg | 7.7mm |
+| 0.30 | 10.83 deg | 35.7mm |
+
+Monotonic, and in the direction the pendulum-compliance idea predicts:
+less squeeze, less tilt. But this is **one trial per value**, and bite
+has already shown a lot of run-to-run randomness even at a fixed squeeze
+command (2.3 to 4.3mm across otherwise-identical runs) -- so this table
+is a lead, not a confirmed dial, until it is repeated enough times per
+value to see whether the ordering survives that noise.
+
+It also has not been checked against the reason GRIPPER_SQUEEZE is 0.18
+and not something smaller: its own docstring in arm.py records that a
+lighter first-contact grip (1.1mm of bite) held through a lift and then
+let the bottle slide 21mm the moment the *other* arm pushed on it during
+a press -- caught by the gate, correctly, as a lost grip. `still_holding`
+read true in all three trials above, but that only checks the clamp
+angle did not creep at rest; none of these trials put the press's lateral
+load on the grip. Turning squeeze down to fix the swing without
+re-checking that is a straight shot at reopening the defect the squeeze
+was raised to close in the first place.
+
+**Exit:** three consecutive opens succeed. Not met. Next, in order:
+repeat the squeeze sweep enough times per value to trust the ordering,
+then check the most promising value still holds under an actual press
+load before touching the constant that ships.
 
 ### 4. The cola slips out mid-pour
 
@@ -247,25 +319,55 @@ real, all locatable, none disguised as something else.
 **Exit:** three consecutive opens succeed. Not met; see defect 3, which
 is now the top defect and is about where arm B puts the bell.
 
-### Phase B — the read-only API
+### Phase B — the read-only API — **built**
 
-`GET /world`, `GET /state`, `POST /can`, and the error taxonomy applied to
-the two existing skills. See `docs/CONTROL_API.md`.
+`GET /world`, `GET /state`, `POST /can` all exist in a new package,
+`bartender_api`, tested against the real running sim (1091/1091 tests
+pass). The error taxonomy is applied to both skills' failures now
+(`Arm.last_error` for `open_bottle`, `PourActionServer.last_error` for
+`pour_drink`), though most of `pour_drink`'s still classify as the generic
+"a stage failed" code rather than a named one, because its messages are
+worded differently from `open_bottle`'s and the classifier's rules are
+written against real messages rather than guessed in advance -- see
+`docs/CONTROL_API.md`.
 
 No motion, so no risk, and immediately useful: it is what you would put in a
 VLM's prompt, and `/can` plus real error codes would have shortened several
-past debugging sessions on their own.
+past debugging sessions on their own. Building it did exactly that once:
+`layout.servicing_arms()` -- built for side-grasping a bottle off the
+line -- turned out to say no arm could reach the glass or the opener
+holster, neither of which is side-grasped, and `/world`'s `reachable_by`
+inherited the same bug before `bartender_api/reach.py` fixed it. Caught by
+curling the live sim, not by a unit test, which is now backed by one.
 
 **Exit:** a caller can describe the bar and rule out an impossible action
-without touching the robot.
+without touching the robot. Met: both skills' failures now carry a specific
+reason through to the result message. What remains is widening the
+classifier's rules to recognise more of `pour_drink`'s own wording, which
+is incremental and does not block Phase C.
 
-### Phase C — the acting API
+### Phase C — the acting API — **started, simple movement only**
 
-`POST /do` with jobs and cancellation, movement primitives over
-`Pendant.dispatch()`, pipelines as callable verbs, a global stop, and an
-action budget.
+`POST /move/point`, `POST /move/jog` and `POST /gripper` exist in
+`bartender_api`, wrapping `Pendant.dispatch()` (`bartender_api/movement.py`)
+rather than reimplementing it, so they inherit every bound the pendant
+already has: MAX_JOG_MM/MAX_JOG_DEG refused not clamped, the gripper's
+refusal to park on its lower limit, `goto` always driving the arm a point
+was taught on. Verified against the real running sim: a real jog that
+failed for a real reason (`only 0.00 of the path was reachable`), a real
+one that succeeded, a real `goto` transit and return, and two concurrent
+requests where the second was refused as busy rather than queued.
 
-**Exit:** a script that is not a ROS node can make a whiskey and coke.
+Deliberately not built: `/move/joints` and `/move/tool` (arbitrary
+absolute joint/Cartesian targets -- Pendant has no verb for either),
+`POST /do` with jobs and cancellation, pipelines as callable verbs, a
+global stop, and an action budget. The one-command-at-a-time lock only
+serialises within `bartender_api`'s own process; it does nothing about the
+browser or terminal pendant issuing a goal to the same arm at the same
+time, which is a pre-existing gap and not new here.
+
+**Exit:** a script that is not a ROS node can make a whiskey and coke. Not
+met -- that needs `/do` and pipelines, neither of which exist yet.
 
 ### Phase D — more bar
 

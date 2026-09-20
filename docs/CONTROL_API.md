@@ -1,11 +1,131 @@
 # Control API — proposal
 
-**Status: proposed, not built.** This is the design to argue with before
-anyone writes `bartender_api`. Nothing in the repo implements it yet.
+**Status: Phase B is built, and Phase C has started -- simple movement
+only.** `GET /world`, `GET /state`, `POST /can` and the error-taxonomy
+classifier (Phase B) all exist and are tested against the real running
+sim. `POST /move/point`, `POST /move/jog` and `POST /gripper` (part of
+Phase C) now exist too, and this process moves the robot through them --
+see "Safety". They are a thin wrapper over `Pendant.dispatch()`
+(`bartender_api/movement.py`), scoped to exactly what Pendant already does
+safely: drive to a taught point, jog relative to where the arm is, or move
+the gripper. Arbitrary joint or Cartesian targets (`/move/joints`,
+`/move/tool` in the sketch below), `/do` with jobs, pipelines, a global
+stop and an action budget are still design only.
+
+Three things worth knowing before extending it, found while building
+Phase B rather than guessed in advance:
+
+- **`layout.servicing_arms()` answers a narrower question than
+  "reachable".** It is APPROACH_WINDOW: can this be side-grasped off the
+  bottle line with the fixed tool orientation that grasp uses. Applied to
+  the glass or the opener holster -- neither of which is side-grasped, one
+  tilted into, one descended onto -- it says no arm can reach either,
+  which is false; the real pour and open skills reach them every day.
+  `bartender_api/reach.py` is a second, plain radial-reach check for
+  exactly those two, and both `/world`'s `reachable_by` and `/can` use it.
+  A generic "/world always uses servicing_arms" implementation ships this
+  bug; it was caught by a live curl against the sim before it caught
+  anyone else.
+- **`Arm.last_error` and `OpenActionServer._why`/`_why_any`** (in
+  `bartender_open`) now thread a sub-call's specific logged reason into
+  the coarse "could not pick up the opener" style messages the action
+  result carries. Before this, GRIPPER_NOT_FOLLOWING and
+  GRASP_STOPPED_WIDE -- split apart specifically because conflating them
+  sent one investigation to the wrong half of the robot -- collapsed back
+  into the same one sentence the moment they reached an action result,
+  which is what the classifier below actually reads.
+- **`pour_action_server` now carries the same `last_error`/`_why`
+  mechanism as `open_action_server`.** Its sub-calls use different wording
+  than open's, though, so most still fall through to STAGE_FAILED rather
+  than a specific code -- the classifier now sees the reason (it lands in
+  `detail`), it just does not always recognise it as one of the named
+  faults yet. Two of pour's phrasings already matched an existing rule
+  without any change: a short Cartesian plan is PLAN_FAILED (both servers
+  say "only reached X of the path"), and `_still_holding_bottle`'s "lost:
+  fingers have closed to..." is now folded into GRASP_LOST. Widening the
+  rest is real, undone work, added rule by rule as pour actually produces
+  the message rather than guessed in advance.
+- **`Pendant.dispatch()` has no structured result at its own boundary** --
+  it prints, and callers (the browser pendant, now this API) capture
+  stdout and read it back. `bartender_api/movement.py` pre-validates
+  everything it can (axis name, jog bound, gripper bound, point existence)
+  so dispatch only ever runs with something it should accept; what is left
+  is classified by matching the two text shapes Pendant's call sites
+  actually produce (`_report`'s "FAILED: ..." and `_require_pose`'s
+  "cannot read ... through /compute_fk"). Verified against a real jog that
+  failed for a real reason (`only 0.00 of the path was reachable`) and a
+  real one that succeeded, both against the running sim, not just a mock.
 
 A single HTTP/JSON surface so that something which is not a ROS node — a
 VLM, a planner, a phone, a test harness — can find out what is on the bar,
 ask whether a thing is possible, and make the robot do it.
+
+## Using it
+
+Start the sim, wait for `You can start planning now`, then run the server:
+
+```bash
+cd ros2_ws && source install/setup.bash
+ros2 run bartender_api server                    # binds 127.0.0.1:8090
+```
+
+Everything below is a real, working route today — not the sketch further
+down, which also includes what is not built yet.
+
+**Look around, read-only:**
+
+```bash
+curl http://127.0.0.1:8090/world
+curl http://127.0.0.1:8090/state
+```
+
+**Ask before acting:**
+
+```bash
+curl -X POST http://127.0.0.1:8090/can \
+  -H 'Content-Type: application/json' \
+  -d '{"verb": "pour", "args": {"bottle": "whiskey", "glass": "glass"}}'
+```
+
+**Move something.** `point` must be one already taught (`ros2 run
+bartender_teach teach` then `list` shows what exists — `home`, `b_home`,
+`whiskey_approach`, `cola_approach` out of the box). `axis` is `j1`..`j6`
+(degrees), `x`/`y`/`z`/`tx`/`ty`/`tz` (mm) or `rx`/`ry`/`rz` (degrees), same
+as the terminal pendant's own `jog` command:
+
+```bash
+curl -X POST http://127.0.0.1:8090/move/point \
+  -H 'Content-Type: application/json' \
+  -d '{"arm": "a", "point": "whiskey_approach"}'
+
+curl -X POST http://127.0.0.1:8090/move/jog \
+  -H 'Content-Type: application/json' \
+  -d '{"arm": "a", "axis": "j1", "amount": 5}'
+
+curl -X POST http://127.0.0.1:8090/gripper \
+  -H 'Content-Type: application/json' \
+  -d '{"arm": "b", "position": 0.25}'
+```
+
+Every `/move/*` and `/gripper` response is `{"ok": bool, "message": "..."}`
+-- `message` is the pendant's own captured output, not a code, because that
+is genuinely all `Pendant.dispatch()` produces (see the note on this under
+"Three things worth knowing" above). A busy server answers
+`{"ok": false, "message": "busy: a command is already running"}` with HTTP
+409 rather than queuing the request.
+
+**From another machine on the same LAN:** bind to this host's LAN address
+instead of localhost, e.g. `ros2 run bartender_api server --host
+192.168.1.155`, and use that address in place of `127.0.0.1` above. The
+server prints a warning when it does this, because it means: **from that
+point on, `/move/*` and `/gripper` have no authentication** -- anyone who
+can reach that address and port can jog the arms. See "Safety". Only bind
+wide on a network you trust, and prefer a VPN (Tailscale/WireGuard) or an
+SSH tunnel over a router port-forward if the other machine is on a
+*different* network -- a direct forward puts an unauthenticated
+robot-control endpoint on the open internet, which this project's own
+Safety section says plainly not to do without adding at least a shared
+token first (not built).
 
 ## Why a separate layer at all
 
@@ -212,6 +332,15 @@ A starting set, drawn from failures this project has actually produced:
 | `OBJECT_NOT_SEATED` | got there, geometry check failed | yes |
 | `OBJECT_DISTURBED` | the workpiece moved more than allowed | yes |
 | `SCENE_STALE` | no model poses; the bridge is down | no |
+| `STAGE_FAILED` | a named stage failed with no specific reason reaching the classifier | yes |
+| `UNCLASSIFIED` | a message the classifier does not recognise at all | no |
+
+The last two are additions from building the classifier, not in the
+original thirteen above: a wrong code is worse than an honest "do not
+know" (the same reasoning behind the `GRIPPER_NOT_FOLLOWING` /
+`GRASP_STOPPED_WIDE` split below), so a coarse stage summary becomes
+`STAGE_FAILED` and anything genuinely unrecognised becomes `UNCLASSIFIED`
+rather than a guessed specific code.
 
 `MOVE_STOPPED_SHORT` and `GRIPPER_NOT_FOLLOWING` are not hypothetical —
 see `docs/ROADMAP.md`, where both are written up as defects that have since
@@ -230,12 +359,26 @@ The page moves a robot arm. `teach_gui` already takes the right line and
 the API should copy it exactly:
 
 - **Bind `127.0.0.1` by default.** `--host 0.0.0.0` is reasonable on an
-  isolated robot LAN and a bad idea anywhere else; print a warning.
+  isolated robot LAN and a bad idea anywhere else; print a warning. Done,
+  and the warning text now says the process moves the robot rather than
+  the older "read-only today" wording.
 - **No authentication is not a plan.** Before this is exposed to anything
-  off-host, a shared token in a header is the minimum.
-- **Every job cancellable**, and a global `POST /stop`.
-- **`dry` on everything that moves**, so a planner can rehearse.
-- **Rate-limited and serialised.** Refuse a second motion, do not queue it.
+  off-host, a shared token in a header is the minimum. Not built.
+- **Every job cancellable**, and a global `POST /stop`. Not built --
+  `/move/point` and `/move/jog` block for the length of one motion and
+  there is nothing to cancel mid-flight yet, which is acceptable for a
+  single jog but will not be once `goto` targets are longer transits.
+- **`dry` on everything that moves**, so a planner can rehearse. Not
+  built.
+- **Rate-limited and serialised. Refuse a second motion, do not queue
+  it.** Done for serialisation: `MovementBridge` holds the same
+  non-blocking-acquire-or-refuse lock `teach_gui.py`'s `Bridge` does, so a
+  second `/move/*` or `/gripper` call while one is running gets `{"ok":
+  false, "message": "busy: ..."}` rather than queuing. It only serialises
+  within this one process, though -- it does nothing about the browser
+  pendant or the terminal pendant issuing a goal to the same arm at the
+  same time, which is a real, pre-existing gap this does not close. Not
+  rate-limited.
 
 An autonomous caller should also be given a budget — maximum actions per
 minute, maximum consecutive failures before it must stop and ask — enforced
@@ -255,16 +398,33 @@ easier to iterate over plain HTTP.
 
 ## Build order
 
-1. `GET /world` and `GET /state` — read-only, no risk, immediately useful
-   for prompting a VLM.
-2. `POST /can` — pure geometry over `layout.py`.
-3. The error taxonomy, applied to the two existing skills. Do this *before*
-   `/do`, so `/do` is born with it.
+1. ~~`GET /world` and `GET /state` — read-only, no risk, immediately useful
+   for prompting a VLM.~~ **Built**, in `bartender_api`.
+2. ~~`POST /can` — pure geometry over `layout.py`.~~ **Built.**
+3. ~~The error taxonomy, applied to the two existing skills.~~ **Built for
+   both.** `open_bottle` via `Arm.last_error`/`_why`/`_why_any`,
+   `pour_drink` via `PourActionServer.last_error`/`_why`. Most of
+   `pour_drink`'s specific reasons still classify as STAGE_FAILED rather
+   than a named code, because its wording differs from `open_bottle`'s and
+   the rules were written against real messages, not guessed in advance --
+   see `errors.py`'s module docstring for which two already match. Widening
+   that coverage can happen incrementally; it does not block step 4 below.
 4. `POST /do` + jobs over the existing actions.
-5. Movement primitives over `Pendant.dispatch()`.
+5. ~~Movement primitives over `Pendant.dispatch()`.~~ **Partly built, out
+   of order:** `POST /move/point`, `POST /move/jog`, `POST /gripper` exist
+   (`bartender_api/movement.py`), by explicit request to have "simple
+   movement" before `/do`. `/move/joints` and `/move/tool` (arbitrary
+   absolute targets) are not built -- Pendant has no verb for either, and
+   adding them means either a new Pendant command or bypassing it and
+   losing its bounds, neither of which is "simple". A global stop and an
+   action budget (see "Safety") are also not built yet; today's only
+   safety net is the one-command-at-a-time lock and Pendant's own refusals.
 6. Pipelines.
 7. MCP front end.
 
-Steps 1–3 are worth doing on their own even if nothing autonomous ever
-arrives: `/can` and a real error taxonomy would have made several of this
-project's debugging sessions much shorter.
+Steps 1–3 were worth doing on their own even before anything autonomous
+arrived: building `/can` and the error taxonomy caught two real bugs
+(`layout.servicing_arms()` misapplied to the glass and the opener holster,
+and `open_bottle`'s coarse failure messages losing the specific reason a
+sub-call had already logged) before they shipped, exactly the kind of
+thing this paragraph predicted they would.

@@ -280,6 +280,15 @@ class FakeGripper:
             info=lambda *a, **k: None, warn=lambda *a, **k: None,
             error=lambda *a, **k: None)
 
+    def _error(self, message):
+        """Match Arm._error: log through whatever _log is set to, and remember.
+
+        grasp() calls self._error(...) now, not self._log().error(...)
+        directly, so a fake standing in for self needs this too.
+        """
+        self.last_error = message
+        self._log().error(message)
+
 
 def grasp_with(follow, width):
     """Run the real Arm.grasp against a scripted gripper."""
@@ -427,7 +436,8 @@ def test_send_gripper_refuses_a_command_on_the_open_stop():
         gripper_client=types.SimpleNamespace(
             send_goal_async=lambda goal: sent.append(goal)),
         _log=lambda: types.SimpleNamespace(
-            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None),
+        _error=lambda msg: None)
     assert Arm._send_gripper(fake, GRIPPER_LOWER_LIMIT) is None
     assert Arm._send_gripper(fake, GRIPPER_UPPER_LIMIT + 0.01) is None
     assert sent == [], 'a refused command still reached the action client'
@@ -441,7 +451,8 @@ def test_the_refusal_says_why_rather_than_just_no():
         gripper_client=types.SimpleNamespace(send_goal_async=lambda goal: None),
         _log=lambda: types.SimpleNamespace(
             info=lambda *a: None, warn=lambda *a: None,
-            error=lambda m, *a: messages.append(m)))
+            error=lambda m, *a: messages.append(m)),
+        _error=lambda msg: messages.append(msg))
     Arm._send_gripper(fake, 0.0)
     assert any('lower joint limit' in m for m in messages)
 
@@ -518,7 +529,8 @@ def test_a_ramped_release_lands_exactly_on_the_open_position(clamp, monkeypatch)
                 accepted=True,
                 get_result_async=lambda: None))[1],
         _log=lambda: types.SimpleNamespace(
-            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None),
+        _error=lambda msg: None)
     monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
     monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
     Arm.command_gripper(fake, GRIPPER_OPEN_POS, ramp=True)
@@ -602,7 +614,8 @@ def test_an_open_that_ends_on_the_stop_is_reported_there_and_then(
             accepted=True, get_result_async=lambda: None),
         _log=lambda: types.SimpleNamespace(
             info=lambda *a: None, warn=lambda *a: None,
-            error=lambda m, *a: said.append(m)))
+            error=lambda m, *a: said.append(m)),
+        _error=lambda msg: said.append(msg))
     monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
     monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
     assert Arm.command_gripper(fake, GRIPPER_OPEN_POS, ramp=True) is ok
@@ -641,7 +654,8 @@ def test_a_ramp_from_a_reading_below_the_floor_is_not_refused(monkeypatch):
             types.SimpleNamespace(accepted=True,
                                   get_result_async=lambda: None))[1],
         _log=lambda: types.SimpleNamespace(
-            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None),
+        _error=lambda msg: None)
     monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
     monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
     assert Arm.command_gripper(fake, 0.030, ramp=True)

@@ -480,11 +480,30 @@ class Arm:
             GetStateValidity, 'check_state_validity', callback_group=cb_group)
         self.fk_client = node.create_client(
             GetPositionFK, 'compute_fk', callback_group=cb_group)
+        # The last thing this arm logged as an error, so a caller that only
+        # got a coarse "could not pick up the opener" back from a failed
+        # sub-call has somewhere to find out why. Nothing reads this today
+        # except bartender_api's error-taxonomy classifier; open_action_server
+        # discarded it before that existed, which is a real gap -- see
+        # docs/CONTROL_API.md.
+        self.last_error = None
 
     # -- state ------------------------------------------------------------
 
     def _log(self):
         return self.node.get_logger()
+
+    def _error(self, message):
+        """Log an error and remember it verbatim as `last_error`.
+
+        Changes nothing about what gets logged or when -- every call site
+        here used to say self._log().error(message) directly. It exists so
+        the specific reason a grasp or a move failed survives past the
+        boolean/None a caller like open_action_server sees, instead of being
+        lost the instant the log line scrolls by.
+        """
+        self.last_error = message
+        self._log().error(message)
 
     def joint_state(self):
         return self.node.joint_state
@@ -539,7 +558,7 @@ class Arm:
         goal.planning_options = PlanningOptions(plan_only=False)
 
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
-            self._log().error('move_action server not available')
+            self._error('move_action server not available')
             return False
 
         # RRTConnect is randomised and regularly returns a path that only
@@ -564,7 +583,7 @@ class Arm:
             # that is not up yet returns instantly -- and retrying at that
             # rate spends the whole budget inside a third of a second.
             time.sleep(RETRY_BACKOFF_S)
-        self._log().error(f'{self.label}: MoveGroup goal to "{name}" failed')
+        self._error(f'{self.label}: MoveGroup goal to "{name}" failed')
         return False
 
     def flange_position(self):
@@ -601,7 +620,7 @@ class Arm:
             return True
         off = math.dist(where, xyz)
         if off > tolerance:
-            self._log().error(
+            self._error(
                 f'{self.label}: flange is {off * 1000:.1f}mm from where it '
                 f'was sent -- at {tuple(round(v, 4) for v in where)} instead '
                 f'of {tuple(round(v, 4) for v in xyz)}')
@@ -627,7 +646,7 @@ class Arm:
         for client, what in ((self.control_client, 'arm controller'),
                              (self.gripper_client, 'gripper controller')):
             if not client.wait_for_server(timeout_sec=timeout_sec):
-                self._log().error(f'{self.label}: {what} never appeared')
+                self._error(f'{self.label}: {what} never appeared')
                 return False
         return True
 
@@ -686,7 +705,7 @@ class Arm:
                             attempts=IK_ATTEMPTS):
         """Distinct valid IK solutions for a pose, nearest the seed first."""
         if not self.ik_client.wait_for_service(timeout_sec=10.0):
-            self._log().error('compute_ik not available')
+            self._error('compute_ik not available')
             return []
         base_seed = list(seed or self.home_joints or [0.0] * 6)
         rng = random.Random(0)          # reproducible run to run
@@ -854,7 +873,7 @@ class Arm:
                 f'{self.label}: "{name}" branch {index + 1} of '
                 f'{len(candidates)} cannot run the descent from where it '
                 f'actually landed; trying the next')
-        self._log().error(
+        self._error(
             f'{self.label}: none of {len(candidates)} approach '
             f'configurations for "{name}" can run the descent')
         return False
@@ -887,7 +906,7 @@ class Arm:
         not a search.
         """
         if not self.ik_client.wait_for_service(timeout_sec=10.0):
-            self._log().error('compute_ik not available')
+            self._error('compute_ik not available')
             return None
         base_seed = list(seed or self.home_joints or [0.0] * 6)
         rng = random.Random(0)          # reproducible run to run
@@ -959,7 +978,7 @@ class Arm:
         goal.planning_options = PlanningOptions(plan_only=False)
 
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
-            self._log().error('move_action server not available')
+            self._error('move_action server not available')
             return False
         for attempt in range(PLAN_ATTEMPTS):
             self.wait_until_settled()
@@ -974,7 +993,7 @@ class Arm:
             self._log().warn(
                 f'{self.label}: pose goal "{name}" attempt '
                 f'{attempt + 1}/{PLAN_ATTEMPTS} failed (error_code {code})')
-        self._log().error(f'{self.label}: pose goal "{name}" failed')
+        self._error(f'{self.label}: pose goal "{name}" failed')
         return False
 
     def move_cartesian(self, xyz, quat=SIDE_QUAT, label: str = '',
@@ -992,7 +1011,7 @@ class Arm:
         aborted is then the intended outcome and is logged, not failed on.
         """
         if not self.cartesian_client.wait_for_service(timeout_sec=10.0):
-            self._log().error('compute_cartesian_path not available')
+            self._error('compute_cartesian_path not available')
             return False
         self.wait_until_settled()
 
@@ -1016,23 +1035,23 @@ class Arm:
         response = block_on(self.cartesian_client.call_async(request),
                             timeout_sec=30.0)
         if response is None:
-            self._log().error(f'{self.label}: Cartesian plan "{label}" timed out')
+            self._error(f'{self.label}: Cartesian plan "{label}" timed out')
             return False
         if response.fraction < MIN_CARTESIAN_FRACTION:
-            self._log().error(
+            self._error(
                 f'{self.label}: Cartesian plan "{label}" only reached '
                 f'{response.fraction:.2f} of the path')
             return False
 
         if not self.execute_client.wait_for_server(timeout_sec=10.0):
-            self._log().error('execute_trajectory server not available')
+            self._error('execute_trajectory server not available')
             return False
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = response.solution
         handle = block_on(self.execute_client.send_goal_async(goal),
                           timeout_sec=15.0)
         if handle is None or not handle.accepted:
-            self._log().error(f'{self.label}: execution "{label}" rejected')
+            self._error(f'{self.label}: execution "{label}" rejected')
             return False
         result = block_on(handle.get_result_async(), timeout_sec=60.0)
         ok = result is not None and result.result.error_code.val == 1
@@ -1043,7 +1062,7 @@ class Arm:
                 f'which is what pushing against something looks like')
             return True
         if not ok:
-            self._log().error(f'{self.label}: execution "{label}" failed')
+            self._error(f'{self.label}: execution "{label}" failed')
         return ok
 
     # -- gripper ----------------------------------------------------------
@@ -1059,7 +1078,7 @@ class Arm:
         finds out at once instead of after a half-hour sim run.
         """
         if not GRIPPER_OPEN_POS <= float(position) <= GRIPPER_UPPER_LIMIT:
-            self._log().error(
+            self._error(
                 f'{self.label}: refusing gripper command {position:.4f} rad. '
                 f'The usable band is {GRIPPER_OPEN_POS:.2f}..'
                 f'{GRIPPER_UPPER_LIMIT:.2f}; resting on the lower joint '
@@ -1170,7 +1189,7 @@ class Arm:
             command = min(target, command + GRIPPER_FAST_STEP)
             handle = self._send_gripper(command)
             if handle is None or not handle.accepted:
-                self._log().error(f'{self.label}: gripper goal rejected')
+                self._error(f'{self.label}: gripper goal rejected')
                 return None
             reached = self.wait_for_gripper(command, timeout_s=2.5)
             if command - reached > GRIPPER_STALL_GAP:
@@ -1189,7 +1208,7 @@ class Arm:
             command = min(GRIPPER_FULLY_CLOSED, command + GRIPPER_CLOSE_STEP)
             handle = self._send_gripper(command)
             if handle is None or not handle.accepted:
-                self._log().error(f'{self.label}: gripper goal rejected')
+                self._error(f'{self.label}: gripper goal rejected')
                 return None
             reached = self.wait_for_gripper(command)
             held = gap_for_knuckle(reached)
@@ -1217,7 +1236,7 @@ class Arm:
                 # met something that was not the opener -- and the message
                 # blamed the gripper.
                 if reached - began_at < GRIPPER_CLOSE_STEP:
-                    self._log().error(
+                    self._error(
                         f'{self.label}: gripper is not moving -- commanded '
                         f'{command:.3f} rad and the joint is at '
                         f'{reached:.3f}, {(command - reached):.3f} behind, '
@@ -1226,7 +1245,7 @@ class Arm:
                         f'{object_width * 1000:.1f}mm wide can be stopping '
                         f'them; it is the gripper not following.')
                 else:
-                    self._log().error(
+                    self._error(
                         f'{self.label}: fingers closed from {began_at:.3f} to '
                         f'{reached:.3f} rad and stopped there, {held * 1000:.1f}'
                         f'mm apart, with the command {(command - reached):.3f} '
@@ -1243,7 +1262,7 @@ class Arm:
             if (command - reached > GRIPPER_STALL_GAP
                     and advance < GRIPPER_CONFIRM_MOVE):
                 if held < object_width - GRASP_PENETRATION:
-                    self._log().error(
+                    self._error(
                         f'{self.label}: fingers stopped at {reached:.4f} rad, '
                         f'which is {held * 1000:.1f}mm apart, but the object '
                         f'is {object_width * 1000:.1f}mm -- so whatever '
@@ -1277,7 +1296,7 @@ class Arm:
                     f'({object_width * 1000:.1f}mm expected, '
                     f'{bite * 1000:.1f}mm of bite)')
                 return reached
-        self._log().error(
+        self._error(
             f'{self.label}: fingers closed all the way to {command:.2f} rad '
             f'(joint at {reached:.3f}, pads '
             f'{gap_for_knuckle(reached) * 1000:.1f}mm apart) without meeting '
@@ -1295,7 +1314,7 @@ class Arm:
         move that starts in contact.
         """
         if not self.gripper_client.wait_for_server(timeout_sec=10.0):
-            self._log().error(f'{self.label}: gripper action not available')
+            self._error(f'{self.label}: gripper action not available')
             return False
 
         start = self.gripper_position()
@@ -1325,7 +1344,7 @@ class Arm:
                     else start + (position - start) * i / steps)
             handle = self._send_gripper(here)
             if handle is None or not handle.accepted:
-                self._log().error(f'{self.label}: gripper goal rejected')
+                self._error(f'{self.label}: gripper goal rejected')
                 return False
             if i < steps:
                 time.sleep(GRIPPER_STEP_DWELL_S)
@@ -1334,7 +1353,7 @@ class Arm:
             time.sleep(GRIPPER_SETTLE_S)
             reached = self.gripper_position()
             if abs(position - reached) < GRASP_STALL_MARGIN:
-                self._log().error(
+                self._error(
                     f'{self.label}: grasp failed -- fingers reached '
                     f'{reached:.4f} rad against a command of {position:.4f}, '
                     f'so nothing is between them')
@@ -1355,7 +1374,7 @@ class Arm:
             time.sleep(GRIPPER_RELEASE_SETTLE_S)
             reached = self.gripper_position()
         if math.isnan(reached) or abs(reached - position) > GRIPPER_STALL_GAP:
-            self._log().error(
+            self._error(
                 f'{self.label}: gripper was told to go to {position:.3f} rad '
                 f'and is at {reached:.3f}')
             return False
@@ -1379,7 +1398,7 @@ class Arm:
         # LEFT there. Said here, at the moment it happens, instead of three
         # minutes later as an unexplained "gripper not following".
         if reached < GRIPPER_LOWER_LIMIT + GRIPPER_LIMIT_MARGIN / 2.0:
-            self._log().error(
+            self._error(
                 f'{self.label}: gripper has come to rest at {reached:.4f} rad, '
                 f'on its lower stop rather than at {position:.3f}. It will '
                 f'stop responding to commands from here; restart the '

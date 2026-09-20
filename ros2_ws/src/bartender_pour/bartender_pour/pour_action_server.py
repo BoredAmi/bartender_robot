@@ -755,6 +755,12 @@ class PourActionServer(Node):
         cb_group = ReentrantCallbackGroup()
 
         self._joint_state = None
+        # The last thing this node logged as an error, so a caller that only
+        # sees the coarse "failed while pouring {bottle}: {stage}" result
+        # message has somewhere to find out why. Mirrors Arm.last_error in
+        # bartender_open, which exists for the same reason -- see
+        # docs/CONTROL_API.md's note on this being the piece still missing.
+        self.last_error = None
         self.create_subscription(
             JointState, 'joint_states', self._on_joint_state, 10,
             callback_group=cb_group)
@@ -785,6 +791,16 @@ class PourActionServer(Node):
         self._joint_state = msg
 
     # ---- motion helpers -------------------------------------------------
+
+    def _error(self, message):
+        """Log an error and remember it verbatim as `last_error`.
+
+        Changes nothing about what gets logged or when -- every call site
+        here used to say self.get_logger().error(message) directly. See
+        Arm._error in bartender_open, which this copies for the same reason.
+        """
+        self.last_error = message
+        self.get_logger().error(message)
 
     @staticmethod
     def _block_on(future, timeout_sec: float):
@@ -824,7 +840,7 @@ class PourActionServer(Node):
         the second bottle from sweeping through the first.
         """
         if not self._scene_client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error('apply_planning_scene not available')
+            self._error('apply_planning_scene not available')
             return False
 
         scene = PlanningScene(is_diff=True)
@@ -860,7 +876,7 @@ class PourActionServer(Node):
             self._scene_client.call_async(ApplyPlanningScene.Request(scene=scene)),
             timeout_sec=10.0)
         if response is None or not response.success:
-            self.get_logger().error('failed to apply planning scene obstacles')
+            self._error('failed to apply planning scene obstacles')
             return False
         return True
 
@@ -884,7 +900,7 @@ class PourActionServer(Node):
         goal.planning_options = PlanningOptions(plan_only=False)
 
         if not self._move_group_client.wait_for_server(timeout_sec=10.0):
-            self.get_logger().error('move_action server not available')
+            self._error('move_action server not available')
             return False
 
         # RRTConnect is randomised and regularly returns a path that only fails
@@ -910,7 +926,7 @@ class PourActionServer(Node):
             self.get_logger().warn(
                 f'plan to "{name}" attempt {attempt + 1}/{PLAN_ATTEMPTS} failed '
                 f'(error_code {code}), retrying')
-        self.get_logger().error(f'MoveGroup goal to "{name}" failed')
+        self._error(f'MoveGroup goal to "{name}" failed')
         return False
 
     def _move_cartesian(self, x: float, y: float, z: float, quat=SIDE_QUAT,
@@ -938,10 +954,10 @@ class PourActionServer(Node):
     def _follow_cartesian(self, poses, label: str = '',
                           may_stall: bool = False) -> bool:
         if self._joint_state is None:
-            self.get_logger().error('no /joint_states yet, cannot seed Cartesian plan')
+            self._error('no /joint_states yet, cannot seed Cartesian plan')
             return False
         if not self._cartesian_client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error('compute_cartesian_path service not available')
+            self._error('compute_cartesian_path service not available')
             return False
         self._wait_until_arm_settled()
 
@@ -966,10 +982,10 @@ class PourActionServer(Node):
         response = self._block_on(
             self._cartesian_client.call_async(request), timeout_sec=30.0)
         if response is None:
-            self.get_logger().error(f'Cartesian plan "{label}" timed out')
+            self._error(f'Cartesian plan "{label}" timed out')
             return False
         if response.fraction < MIN_CARTESIAN_FRACTION:
-            self.get_logger().error(
+            self._error(
                 f'Cartesian plan "{label}" only reached {response.fraction:.2f} of the path')
             return False
 
@@ -984,14 +1000,14 @@ class PourActionServer(Node):
                 f'{span.sec + span.nanosec * 1e-9:.2f}s')
 
         if not self._execute_client.wait_for_server(timeout_sec=10.0):
-            self.get_logger().error('execute_trajectory server not available')
+            self._error('execute_trajectory server not available')
             return False
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = response.solution
         goal_handle = self._block_on(
             self._execute_client.send_goal_async(goal), timeout_sec=15.0)
         if goal_handle is None or not goal_handle.accepted:
-            self.get_logger().error(f'Cartesian execution "{label}" rejected')
+            self._error(f'Cartesian execution "{label}" rejected')
             return False
         result = self._block_on(goal_handle.get_result_async(), timeout_sec=60.0)
         if result is None or result.result.error_code.val != 1:
@@ -1006,7 +1022,7 @@ class PourActionServer(Node):
                     f'"{label}" did not arrive (error_code {code}), which is '
                     f'what setting something down on the counter looks like')
                 return True
-            self.get_logger().error(
+            self._error(
                 f'Cartesian execution "{label}" failed (error_code {code})')
             return False
         return True
@@ -1020,7 +1036,7 @@ class PourActionServer(Node):
         asks for it any more; the guard is for whatever is written next.
         """
         if not GRIPPER_OPEN_POS <= float(position) <= GRIPPER_UPPER_LIMIT:
-            self.get_logger().error(
+            self._error(
                 f'refusing gripper command {position:.4f} rad. The usable '
                 f'band is {GRIPPER_OPEN_POS:.2f}..{GRIPPER_UPPER_LIMIT:.2f}; '
                 f'resting on the lower joint limit stops the knuckle '
@@ -1048,7 +1064,7 @@ class PourActionServer(Node):
         command is fine only in free air.
         """
         if not self._gripper_client.wait_for_server(timeout_sec=10.0):
-            self.get_logger().error('gripper action server not available')
+            self._error('gripper action server not available')
             return False
 
         start = self._gripper_position()
@@ -1080,7 +1096,7 @@ class PourActionServer(Node):
                     else start + (position - start) * i / steps)
             goal_handle = self._send_gripper(here)
             if goal_handle is None or not goal_handle.accepted:
-                self.get_logger().error('gripper goal rejected')
+                self._error('gripper goal rejected')
                 return False
             if i < steps:
                 time.sleep(GRIPPER_STEP_DWELL_S)
@@ -1089,7 +1105,7 @@ class PourActionServer(Node):
             time.sleep(GRIPPER_SETTLE_S)
             reached = self._gripper_position()
             if abs(position - reached) < GRASP_STALL_MARGIN:
-                self.get_logger().error(
+                self._error(
                     f'grasp failed: fingers reached {reached:.4f} rad against a '
                     f'command of {position:.4f}, so nothing is between them')
                 return False
@@ -1115,7 +1131,7 @@ class PourActionServer(Node):
         """
         reached = self._gripper_position()
         if abs(bottle.clamp_pos - reached) < GRASP_STALL_MARGIN:
-            self.get_logger().error(
+            self._error(
                 f'{bottle.name} lost: fingers have closed to {reached:.4f} rad, '
                 f'the commanded {bottle.clamp_pos:.4f}, so they are now empty')
             return False
@@ -1278,7 +1294,8 @@ class PourActionServer(Node):
 
         if not step('publishing_obstacles', self._publish_obstacles):
             goal_handle.abort()
-            return self._fail_result('failed at step: publishing_obstacles')
+            return self._fail_result(
+                f'failed at step: publishing_obstacles{self._why()}')
 
         # The goal's pour_amount_ml is the spirit measure; the mixer follows at
         # MIXER_RATIO, so the reported total is what actually went in the glass.
@@ -1289,15 +1306,21 @@ class PourActionServer(Node):
         for bottle, amount in zip(RECIPE, amounts):
             if not self._pour_from(bottle, amount, step):
                 failed_at = feedback.state
+                # Snapshot before recovery runs: _recover_to_safe issues more
+                # motion and gripper commands of its own, and a failure in
+                # one of those would otherwise overwrite last_error with the
+                # recovery's own reason rather than the one that actually
+                # aborted the pour.
+                reason = self._why()
                 self._recover_to_safe(bottle)
                 goal_handle.abort()
                 return self._fail_result(
-                    f'failed while pouring {bottle.name}: {failed_at}')
+                    f'failed while pouring {bottle.name}: {failed_at}{reason}')
             poured_ml += amount
 
         if not step('returning_home', self._move_to_joints, 'home', HOME_JOINTS):
             goal_handle.abort()
-            return self._fail_result('failed at step: returning_home')
+            return self._fail_result(f'failed at step: returning_home{self._why()}')
 
         goal_handle.succeed()
         result = PourDrink.Result()
@@ -1306,6 +1329,15 @@ class PourActionServer(Node):
             f'{a:.0f}ml {b.name}' for b, a in zip(RECIPE, amounts))
         result.estimated_poured_ml = poured_ml
         return result
+
+    def _why(self):
+        """Give ' (reason)' if this node has a logged reason, else ''.
+
+        Mirrors OpenActionServer._why in bartender_open, for the same
+        purpose: a coarse "failed while pouring X: stage" result message
+        should not discard the specific thing a sub-call already worked out.
+        """
+        return f' ({self.last_error})' if self.last_error else ''
 
     @staticmethod
     def _fail_result(message: str) -> PourDrink.Result:
