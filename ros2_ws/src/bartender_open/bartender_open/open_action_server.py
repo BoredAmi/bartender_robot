@@ -83,7 +83,7 @@ from bartender_teach.point_store import (
 )
 
 from . import layout as L
-from .arm import Arm, block_on, pose_at, side_quat
+from .arm import GRIPPER_OPEN_POS, Arm, block_on, pose_at, side_quat
 
 # The topic the DetachableJoint inside models/beer_bottle/model.sdf listens
 # on, bridged ROS->Gazebo in sim.launch.py. Named in three places and all
@@ -186,6 +186,31 @@ CAP_SETTLE_S = 2.0
 # little wide once. Backing off 60mm and coming down on a fresh measurement
 # fixes that; doing it a third time would be hoping rather than retrying.
 SEAT_ATTEMPTS = 2
+
+# How long the held beer keeps moving after arm A's lift reports done, and
+# what "stopped" counts as while polling for it.
+#
+# A bottle held by friction on its neck and lifted 50mm keeps swinging on
+# the pads for real seconds after the arm's own trajectory finishes --
+# measured on a traced run, 63mm of drift in x over about 6 real seconds
+# following the lift, before it settled to within a couple of millimetres.
+# "Re-aim right before every descent" (below) assumed a quick re-read would
+# catch a settled bottle; it does not, if the swing is still going when the
+# read happens, and the descent it feeds then takes long enough that the
+# cap has moved again by the time the bell arrives. That is the leading
+# suspect for the run that put a press 114.8mm off centre while the grasps
+# on either side of it were clean -- see ROADMAP.md, "the open is
+# unreliable".
+#
+# A fixed sleep was considered and rejected: the swing's size depends on how
+# the lift disturbed the grip, which varies, and a guessed duration is
+# either wasted time on a quiet lift or too short on a bad one -- exactly
+# the failure this exists to close. Polled instead, the same way
+# Arm.wait_for_gripper waits out a joint settling: quiet for a whole window,
+# not just quiet at one instant.
+BEER_SETTLE_MOVE = 0.003
+BEER_SETTLE_WINDOW_S = 1.0
+BEER_SETTLE_TIMEOUT_S = 15.0
 
 # Both of the streams this node reads are worth only their newest message:
 # an old /joint_states is a lie about where the fingers are, and an old model
@@ -611,7 +636,7 @@ class OpenActionServer(Node):
         # gripper has settled shut under gravity, so this is the largest move
         # it makes, and one goal across the whole range was seen stopping
         # two-thirds of the way.
-        if not b.command_gripper(0.0, ramp=True):
+        if not b.command_gripper(GRIPPER_OPEN_POS, ramp=True):
             return False
         if not b.approach_then('opener approach', self._above(tool), tool):
             return False
@@ -652,7 +677,7 @@ class OpenActionServer(Node):
         tool = L.side_grasp_tool0(L.beer_grip_point())
 
         step('reaching for the beer', 0.20)
-        if not a.command_gripper(0.0, ramp=True):
+        if not a.command_gripper(GRIPPER_OPEN_POS, ramp=True):
             return False
         standing = self._pose(BEER_MODEL)
         if not a.approach_then('beer approach', self._above(tool), tool):
@@ -736,6 +761,43 @@ class OpenActionServer(Node):
         rim_z = in_b[2] + L.CAP_HEIGHT - L.BELL_HEIGHT
         return L.side_grasp_tool0((in_b[0], in_b[1], rim_z + L.OPENER_GRIP_Z))
 
+    def _wait_for_beer_to_settle(self):
+        """Poll the held beer until it stops moving, and say how long it took.
+
+        See BEER_SETTLE_MOVE for why this polls rather than sleeping a fixed
+        time. Returns the settled pose, or the last pose read if it never
+        settled within BEER_SETTLE_TIMEOUT_S -- logged, not failed on, since
+        aiming at a slow residual creep is still far better than aiming at
+        the peak of the swing this exists to wait out.
+        """
+        start = time.time()
+        deadline = start + BEER_SETTLE_TIMEOUT_S
+        history = []
+        where = self._pose(BEER_MODEL)
+        if where is None:
+            return None
+        while time.time() < deadline:
+            now = time.time()
+            where = self._pose(BEER_MODEL)
+            if where is None:
+                return None
+            history.append((now, where))
+            window = [w for t, w in history if t >= now - BEER_SETTLE_WINDOW_S]
+            if history[0][0] <= now - BEER_SETTLE_WINDOW_S:
+                xs, ys, zs = zip(*window)
+                spread = math.sqrt((max(xs) - min(xs)) ** 2
+                                   + (max(ys) - min(ys)) ** 2
+                                   + (max(zs) - min(zs)) ** 2)
+                if spread < BEER_SETTLE_MOVE:
+                    self.get_logger().info(
+                        f'beer settled after {now - start:.1f}s')
+                    return where
+            time.sleep(0.05)
+        self.get_logger().warn(
+            f'beer had not settled within {BEER_SETTLE_TIMEOUT_S:.0f}s; '
+            f'aiming at it anyway')
+        return where
+
     def _press(self, step):
         """Bring the opener down onto the cap and push.
 
@@ -745,6 +807,7 @@ class OpenActionServer(Node):
         reports them, and retries the descent if the first one misses.
         """
         b = self.arm_b
+        self._wait_for_beer_to_settle()
         seated = self._seated_tool0()
         if seated is None:
             return None
@@ -755,14 +818,30 @@ class OpenActionServer(Node):
             return None
 
         for attempt in range(1, SEAT_ATTEMPTS + 1):
-            # Re-aim before EVERY descent. The first measurement was taken
-            # before arm B had moved at all, and the bottle does not stand
-            # perfectly still in the meantime -- it hangs from the pads and
-            # swings a few millimetres as arm A settles. Measured, it drifted
-            # 8mm in y between the two moments, which is more than the bell's
-            # mouth can funnel in.
+            # Re-aim before EVERY descent, and wait for the swing to be done
+            # first. The first measurement was taken before arm B had moved
+            # at all, and the bottle does not stand perfectly still in the
+            # meantime -- it hangs from the pads and swings as arm A settles,
+            # for real seconds rather than an instant. See
+            # BEER_SETTLE_MOVE for how much and why a re-read alone is not
+            # enough to be sure it is over.
+            self._wait_for_beer_to_settle()
             seated = self._seated_tool0() or seated
-            if not b.move_cartesian(seated, label='seat the bell on the cap'):
+            # may_stall: `seated` is by construction the pose where the
+            # crown plate is TOUCHING the cap, so arriving at it exactly is
+            # the boundary case rather than the normal one. A descent that
+            # stops early has hit something -- usually the cap's edge or the
+            # bottle's shoulder when the aim is off -- and the right answer
+            # is to go on and MEASURE the seating, which the gate below
+            # already does, not to abandon the attempt with no numbers.
+            #
+            # Before the arm controllers had a goal tolerance this never
+            # arose: the controller called every descent a success. The
+            # first run with one gave up as "the press did not run" on an
+            # attempt whose own measurement said the bell was 28.6mm off
+            # centre -- which is the far more useful thing to report.
+            if not b.move_cartesian(seated, label='seat the bell on the cap',
+                                    may_stall=True):
                 return None
 
             before = self._pose(BEER_MODEL)
@@ -845,9 +924,17 @@ class OpenActionServer(Node):
         # Straight down onto the post. The post's lead-in is what turns the
         # residual xy error into a funnel rather than an opener parked across
         # the top of it, and it can only do that if the descent is vertical.
-        if not b.move_cartesian(down, label='opener onto the post'):
+        #
+        # may_stall: THE RIM LANDS ON THE COUNTER. Like every other
+        # setting-down move here this one cannot arrive, and it only looked
+        # as though it did while the arm controllers had no goal tolerance
+        # and reported success wherever they stopped. Once they had one this
+        # came back as `execution "opener onto the post" failed` on a run
+        # that had already got the cap off -- "opened, but could not stow".
+        if not b.move_cartesian(down, label='opener onto the post',
+                                may_stall=True):
             return False
-        if not b.command_gripper(0.0, ramp=True):
+        if not b.command_gripper(GRIPPER_OPEN_POS, ramp=True):
             return False
         if not self._release_opener():
             return False
@@ -872,9 +959,13 @@ class OpenActionServer(Node):
         # straight down onto it.
         if not a.approach_then('above the stand', self._above(tool), tool):
             return False
-        if not a.move_cartesian(tool, label='beer into the stand'):
+        # may_stall, for the same reason as the opener above: the bottle's
+        # base comes to rest on the counter inside the stand's ring, so the
+        # last millimetres of the command are always refused.
+        if not a.move_cartesian(tool, label='beer into the stand',
+                                may_stall=True):
             return False
-        if not a.command_gripper(0.0, ramp=True):
+        if not a.command_gripper(GRIPPER_OPEN_POS, ramp=True):
             return False
         if not self._release_beer():
             return False

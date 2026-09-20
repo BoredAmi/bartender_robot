@@ -206,15 +206,23 @@ A starting set, drawn from failures this project has actually produced:
 | `ALREADY_OPEN` | premise wrong; the cap is off and can't re-attach in sim | no |
 | `PLAN_FAILED` | MoveIt found nothing | yes |
 | `MOVE_STOPPED_SHORT` | controller said success, flange is elsewhere | yes |
-| `GRIPPER_NOT_FOLLOWING` | goal accepted, joint never moved | yes, then restart |
+| `GRIPPER_NOT_FOLLOWING` | goal accepted, joint never moved | no, restart the sim |
+| `GRASP_STOPPED_WIDE` | fingers closed fine, then met the wrong thing | yes |
 | `GRASP_LOST` | had it, dropped it mid-sequence | yes |
 | `OBJECT_NOT_SEATED` | got there, geometry check failed | yes |
 | `OBJECT_DISTURBED` | the workpiece moved more than allowed | yes |
 | `SCENE_STALE` | no model poses; the bridge is down | no |
 
 `MOVE_STOPPED_SHORT` and `GRIPPER_NOT_FOLLOWING` are not hypothetical —
-see `docs/ROADMAP.md`. An agent that cannot distinguish them from "the plan
-was bad" will retry forever.
+see `docs/ROADMAP.md`, where both are written up as defects that have since
+been fixed. An agent that cannot distinguish them from "the plan was bad"
+will retry forever.
+
+`GRIPPER_NOT_FOLLOWING` and `GRASP_STOPPED_WIDE` are separate codes on
+purpose, and that separation was itself a bug fix: one is the gripper and
+is not retryable, the other is the arm or the workpiece and is. They used
+to share a message, and it sent one investigation to the wrong half of the
+robot.
 
 ## Safety
 

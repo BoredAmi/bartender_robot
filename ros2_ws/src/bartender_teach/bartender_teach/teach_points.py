@@ -143,6 +143,24 @@ GRIPPER_MAX_EFFORT = 100.0
 MAX_JOG_MM = 150.0
 MAX_JOG_DEG = 45.0
 
+# WHAT "OPEN" MEANS, AND WHY IT IS NOT 0.0.
+#
+# robotiq_85_left_knuckle_joint is limit=[0.0, 0.8], and a knuckle left at
+# rest on the LOWER limit stops responding to gripper commands for the rest
+# of the simulator run: goals go on being accepted, the controller stays
+# active, the joint never moves again. Measured, 0.000 was dead after a 10s
+# dwell while 0.020 survived 300s. The full write-up, and the list of
+# explanations it is not, is beside GRIPPER_LOWER_LIMIT in
+# bartender_open/arm.py; bartender_pour carries the same pair of constants.
+#
+# So `open` goes to 0.02 rather than 0.0, which leaves the pads 83.2mm
+# apart instead of 85.0. Anything outside the band is refused, not
+# clamped, like the jogs.
+GRIPPER_LOWER_LIMIT = 0.0
+GRIPPER_LIMIT_MARGIN = 0.02
+GRIPPER_OPEN_POS = GRIPPER_LOWER_LIMIT + GRIPPER_LIMIT_MARGIN
+GRIPPER_UPPER_LIMIT = 0.8
+
 # Wait for the arm to stop before planning anything from where it is. Not
 # optional: without it, a jog issued straight after a move plans from a start
 # state the arm has already left, and execute_trajectory rejects the result
@@ -409,6 +427,13 @@ class TeachNode(Node):
         return True, ''
 
     def command_gripper(self, position, arm=DEFAULT_ARM):
+        if not GRIPPER_OPEN_POS <= float(position) <= GRIPPER_UPPER_LIMIT:
+            return False, (
+                f'gripper position {float(position):.3f} rad is outside '
+                f'{GRIPPER_OPEN_POS:.2f}..{GRIPPER_UPPER_LIMIT:.2f}. '
+                f'Refusing rather than clamping -- and note the floor is '
+                f'not 0: a knuckle parked on its lower limit stops '
+                f'responding for the rest of the run.')
         client = self._grippers[arm.key]
         if not client.wait_for_server(timeout_sec=10.0):
             return False, f"{arm.label}'s gripper action server not available"
@@ -819,10 +844,10 @@ class Pendant:
         self._report(ok, why, f'jogged {label}')
 
     def cmd_open(self, args):
-        ok, why = self.node.command_gripper(0.0, self.arm)
+        ok, why = self.node.command_gripper(GRIPPER_OPEN_POS, self.arm)
         self._report(ok, why, f"{self.arm.label}'s gripper opening")
         if ok:
-            self._record('grip', 0.0, self.arm.key)
+            self._record('grip', GRIPPER_OPEN_POS, self.arm.key)
 
     def cmd_close(self, args):
         pos = self._number(args[0], 'gripper position') if args else 0.5

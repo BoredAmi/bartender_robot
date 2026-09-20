@@ -22,6 +22,9 @@ if(BUILD_TESTING)
   # so needs this package's own dependencies resolvable, which they are by
   # the time tests run.
   ament_add_pytest_test(render test/test_render.py)
+  # The arm controllers' goal tolerances: load-bearing, and their
+  # absence was silent. See the test's own docstring.
+  ament_add_pytest_test(controller_limits test/test_controller_limits.py)
 
   # pep257 runs as a pytest test instead of through ament_lint_auto, only to
   # get at its --ignore list: ament's default set leaves D213 ON while

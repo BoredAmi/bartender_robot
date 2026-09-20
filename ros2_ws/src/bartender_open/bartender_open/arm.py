@@ -49,10 +49,72 @@ from moveit_msgs.srv import (
 from rclpy.action import ActionClient
 from shape_msgs.msg import SolidPrimitive
 
-# All of these are bartender_pour's values, and deliberately so -- they were
+# THE KNUCKLE MUST NEVER BE PARKED ON ITS LOWER JOINT LIMIT.
+#
+# This is the one gripper constant that is NOT bartender_pour's, and the
+# difference is the entire fix for a defect that used to break about half of
+# all opens. bartender_pour has been corrected to match; see the identical
+# note there.
+#
+# The knuckle joint is limit=[0.0, 0.8] (robotiq_2f_85_macro.urdf.xacro).
+# Drive it to 0.0 -- fully open, which is exactly what "open the gripper"
+# used to ask for -- and leave it there, and it stops responding to gripper
+# commands FOR THE REST OF THE SIMULATOR RUN. Measured on single stacks,
+# both arms side by side so the two conditions share a simulator:
+#
+#   parked at 0.300 for 90s, then commanded 0.50  ->  moved, in 2.5s
+#   parked at 0.000 for 90s, then commanded 0.50  ->  never moved
+#   parked at 0.020 for 90s, then commanded 0.50  ->  moved, in 5.0s
+#   parked at 0.000 for 10s, then commanded 0.50  ->  never moved
+#
+# It is the LOWER limit specifically. Parking on the upper one is harmless,
+# which is why the close side of this needs no margin of its own:
+#
+#   parked at 0.800 for 90s, then commanded 0.50  ->  moved, in 3.5s
+#
+# What it is NOT, each ruled out by measurement rather than by reading:
+#   - not stale feedback. Gazebo's own link poses, on
+#     /world/bar_world/dynamic_pose/info, show the fingertip stationary to
+#     four decimals while the command is 0.5. The finger really is not
+#     moving.
+#   - not the controller. `ros2 control list_controllers` reports the
+#     gripper active throughout, and it goes on accepting goals -- which is
+#     why this presented as "goal accepted, joint never moves".
+#   - not the simulator slowing down. /clock holds a steady 0.21 real-time
+#     factor across a 120s window in which the joint does not move at all.
+#   - not the arm. The same arm's six joints keep tracking normally.
+#   - not the number 0.0. The arm joints sit at 0.0 at home for minutes and
+#     move afterwards; their limits are nowhere near it.
+#
+# It IS a simulator artefact rather than a controller misconfiguration,
+# which is the question worth settling before working around it. Three
+# things say so: the controller goes on writing (it stays active and keeps
+# accepting goals), Gazebo's ground truth agrees the finger is not moving,
+# and the joint can be brought back by DISTURBING it -- moving arm B's
+# wrist while its knuckle was dead with a stale 0.5 command pending left
+# the knuckle at 0.500. A joint that resumes when something shakes it was
+# not being integrated, which is a physics-side state and not something
+# ros2_control has a setting for.
+#
+# What is NOT explained: the arm also moves between the open and the grasp
+# in the sequences that failed, and there the gripper stayed dead. So
+# "any motion revives it" is too strong -- it has been seen once. The
+# avoidance below does not depend on knowing which, and none of the failures
+# ever recurred once the joint stopped being parked on the stop.
+#
+# So: the joint is dead only when it comes to rest ON the lower limit, and
+# 0.02 rad of margin is enough to avoid it -- 0.020 survived dwells of 90s
+# and 300s, 0.000 died at 10s, 90s and 300s. It costs 1.8mm of pad gap --
+# 83.2mm open instead of 85.0 -- against a widest gripped object of
+# 38.6mm here, so nothing in this package comes close to noticing.
+# bartender_pour is tighter and says what it costs there.
+GRIPPER_LOWER_LIMIT = 0.0       # from the URDF; do not command it
+GRIPPER_LIMIT_MARGIN = 0.02
+GRIPPER_OPEN_POS = GRIPPER_LOWER_LIMIT + GRIPPER_LIMIT_MARGIN
+
+# The rest ARE bartender_pour's values, and deliberately so -- they were
 # measured against this gripper on these bottles. See the comments beside
 # each one in pour_action_server.py for what was measured and why.
-GRIPPER_OPEN_POS = 0.0
 GRIPPER_MAX_EFFORT = 100.0
 GRIPPER_SETTLE_S = 1.0
 GRIPPER_CLOSE_STEP = 0.02
@@ -237,6 +299,10 @@ GRIPPER_SETTLED_WINDOW_S = 0.40
 # is how grips with 0.9mm of bite came to be accepted as stalls.
 GRIPPER_ARRIVED = 0.010
 GRIPPER_SQUEEZE = 0.18          # how far past the measured stall to command
+# Unlike the open stop, the closed one is safe to sit on (see
+# GRIPPER_LOWER_LIMIT), so this is not a margin -- it is just where the
+# linkage runs out: PAD_GAP puts the pads 0.2mm apart at 0.80.
+GRIPPER_UPPER_LIMIT = 0.8       # from the URDF
 GRIPPER_FULLY_CLOSED = 0.78     # reaching this means nothing is in the way
 # What the pad gap has to be for a stall to be believed, relative to the
 # width of the thing being gripped. The two limits are NOT symmetric, because
@@ -983,6 +1049,22 @@ class Arm:
     # -- gripper ----------------------------------------------------------
 
     def _send_gripper(self, position: float):
+        """Send one gripper goal, refusing any that would park on the stop.
+
+        Refused rather than clamped, in line with the rest of the repo: a
+        caller asking for 0.0 has asked for something that kills the joint
+        for the rest of the run (see GRIPPER_LOWER_LIMIT), and silently
+        sending 0.02 instead would hide that from whoever wrote it. This
+        guard has no legitimate caller today; it is here so the next one
+        finds out at once instead of after a half-hour sim run.
+        """
+        if not GRIPPER_OPEN_POS <= float(position) <= GRIPPER_UPPER_LIMIT:
+            self._log().error(
+                f'{self.label}: refusing gripper command {position:.4f} rad. '
+                f'The usable band is {GRIPPER_OPEN_POS:.2f}..'
+                f'{GRIPPER_UPPER_LIMIT:.2f}; resting on the lower joint '
+                f'limit stops the knuckle responding for the rest of the run.')
+            return None
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
@@ -1063,10 +1145,19 @@ class Arm:
         GRIPPER_PRE_CLOSE_GAP wider than the object, in free air, in one
         command.
         """
-        target = max(0.0, knuckle_for_gap(object_width + GRIPPER_PRE_CLOSE_GAP))
-        command = max(0.0, self.gripper_position())
+        target = max(GRIPPER_OPEN_POS,
+                     knuckle_for_gap(object_width + GRIPPER_PRE_CLOSE_GAP))
+        command = max(GRIPPER_OPEN_POS, self.gripper_position())
         if math.isnan(command):
-            command = 0.0
+            command = GRIPPER_OPEN_POS
+        # Where the fingers were before ANY of this, so that "the joint has
+        # not moved" can be told from "the joint moved and then stopped".
+        # Both fail the same test further down and they are completely
+        # different faults. It has to be read here and not after the
+        # pre-close, because the pre-close is most of the travel: measured
+        # against the pre-close instead, a gripper that had closed 0.345 rad
+        # onto the wrong thing still looked like one that had never moved.
+        began_at = command
         # The loop counts on the COMMANDED angle, never on the measured one.
         # Stepping the command up from wherever the fingers have got to reads
         # as the obvious thing to do and does not terminate: if something
@@ -1117,13 +1208,32 @@ class Arm:
             # onwards: the fingers had never moved, and the message still
             # described where the opener was.
             if command - reached > GRIPPER_UNRESPONSIVE:
-                self._log().error(
-                    f'{self.label}: gripper is not moving -- commanded '
-                    f'{command:.3f} rad and the joint is at {reached:.3f}, '
-                    f'{(command - reached):.3f} behind, with the pads '
-                    f'{held * 1000:.1f}mm apart. Nothing '
-                    f'{object_width * 1000:.1f}mm wide can be stopping them; '
-                    f'it is the gripper not following.')
+                # ...but WHICH of the two? The command outrunning the joint
+                # by this much has two causes that want opposite
+                # investigations, and calling both of them "not following"
+                # sent one straight to the wrong place: an opener pick
+                # stopped with the pads 49.1mm apart on a 24.0mm shaft --
+                # the fingers had closed 0.345 rad perfectly well and then
+                # met something that was not the opener -- and the message
+                # blamed the gripper.
+                if reached - began_at < GRIPPER_CLOSE_STEP:
+                    self._log().error(
+                        f'{self.label}: gripper is not moving -- commanded '
+                        f'{command:.3f} rad and the joint is at '
+                        f'{reached:.3f}, {(command - reached):.3f} behind, '
+                        f'having left {began_at:.3f} where the close began. '
+                        f'The pads are {held * 1000:.1f}mm apart and nothing '
+                        f'{object_width * 1000:.1f}mm wide can be stopping '
+                        f'them; it is the gripper not following.')
+                else:
+                    self._log().error(
+                        f'{self.label}: fingers closed from {began_at:.3f} to '
+                        f'{reached:.3f} rad and stopped there, {held * 1000:.1f}'
+                        f'mm apart, with the command {(command - reached):.3f} '
+                        f'past them. The gripper is working -- but nothing '
+                        f'{object_width * 1000:.1f}mm wide is that far apart, '
+                        f'so they are on something else and the arm is '
+                        f'probably not where it should be.')
                 return None
             # Nothing counts as contact until the pads are at least as close
             # together as the object is wide. Before that, a joint short of
@@ -1143,7 +1253,8 @@ class Arm:
                 # stall on purpose. A closing goal that has bottomed out can
                 # never report success, and it is that unfinished goal that
                 # holds the grip force. Nothing may block on its result.
-                self._send_gripper(min(0.80, reached + GRIPPER_SQUEEZE))
+                self._send_gripper(
+                    min(GRIPPER_UPPER_LIMIT, reached + GRIPPER_SQUEEZE))
                 # ...and then take the grasp from where the fingers SETTLE
                 # under that squeeze, not from where they first touched.
                 #
@@ -1190,12 +1301,29 @@ class Arm:
         start = self.gripper_position()
         if math.isnan(start):
             start = GRIPPER_OPEN_POS
+        # Floored, because `start` is only the interpolation origin and a
+        # MEASURED one: the knuckle overshoots and can be read at 0.0178
+        # mid-brush (see the note at the end of this method). Left alone,
+        # the first interpolated step would come out under GRIPPER_OPEN_POS
+        # and _send_gripper would refuse it, failing the whole command with
+        # "gripper goal rejected" -- a message about the wrong thing.
+        start = max(GRIPPER_OPEN_POS, start)
         steps = (max(1, int(math.ceil(abs(position - start) / GRIPPER_CLOSE_STEP)))
                  if (clamp or ramp) else 1)
 
         handle = None
         for i in range(1, steps + 1):
-            handle = self._send_gripper(start + (position - start) * i / steps)
+            # The LAST step is `position` itself and not the same
+            # arithmetic as the others. start + (position - start) * i/steps
+            # does not land exactly on position in binary floating point:
+            # releasing from the whiskey's 0.25 clamp computes
+            # 0.019999999999999990 for a target of 0.02, which is below
+            # GRIPPER_OPEN_POS and gets refused -- so the release would
+            # fail, on two of the three clamp angles in this file, for a
+            # reason no log line would explain.
+            here = (position if i == steps
+                    else start + (position - start) * i / steps)
+            handle = self._send_gripper(here)
             if handle is None or not handle.accepted:
                 self._log().error(f'{self.label}: gripper goal rejected')
                 return False
@@ -1230,6 +1358,32 @@ class Arm:
             self._log().error(
                 f'{self.label}: gripper was told to go to {position:.3f} rad '
                 f'and is at {reached:.3f}')
+            return False
+        # DID IT COME TO REST ON THE STOP ANYWAY? Nothing commands the stop
+        # any more (see GRIPPER_LOWER_LIMIT), but the joint can still
+        # OVERSHOOT onto it: the ramp's dwell is shorter than the time a
+        # 0.02 step takes, so the command outruns the joint and it arrives
+        # at the full 0.5 rad/s. Traced on two separate opens, arm B's
+        # knuckle went 0.0178 -> -0.0000 -> back to 0.0200, spending 0.068s
+        # of SIMULATED time under 0.015 and exactly one sample at the stop.
+        # The two traces agree to the sample. Arm A, running the identical
+        # code on the same runs, never went below 0.0200 at all, so this is
+        # a timing race and not a property of the command.
+        #
+        # That brush is survivable -- arm B grasped the opener cleanly
+        # later in both of those runs, and every death measured involved
+        # 10s or more AT REST on the stop -- but "there is no evidence it
+        # matters" is not the same as "it cannot happen".
+        #
+        # So the one thing that must never go unnoticed is the joint being
+        # LEFT there. Said here, at the moment it happens, instead of three
+        # minutes later as an unexplained "gripper not following".
+        if reached < GRIPPER_LOWER_LIMIT + GRIPPER_LIMIT_MARGIN / 2.0:
+            self._log().error(
+                f'{self.label}: gripper has come to rest at {reached:.4f} rad, '
+                f'on its lower stop rather than at {position:.3f}. It will '
+                f'stop responding to commands from here; restart the '
+                f'simulator. See GRIPPER_LOWER_LIMIT in arm.py.')
             return False
         return True
 

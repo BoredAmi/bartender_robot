@@ -180,12 +180,21 @@ What is sim-specific and will need rethinking on hardware:
 Do not design around these being fixed. They are in `docs/ROADMAP.md` with
 detail, but in short:
 
-- **Moves can stop far short while the controller reports success.** Traced:
-  MoveIt computed a Cartesian path at 100 %, `b_ur_arm_controller` reported
-  "Goal reached, success!", and the flange was 267 mm from where it was
-  sent. Only the skill's own `arrived_at` check noticed.
-- **Grippers can stop following.** Goals accepted, joint never moves. Seen
-  on both arms; a fresh stack tracks fine.
+- **Moves that end in contact cannot arrive, and say so.** The arm
+  controllers now carry per-joint goal tolerances, so a move that does not
+  get there fails (this was a real defect: they used to report success
+  wherever they stopped). The four moves that legitimately end in contact —
+  setting a bottle down, the opener onto its post, the beer into its stand,
+  the bell onto the cap — pass `may_stall`. If you add a move that ends by
+  touching something, it needs the same, and its correctness has to be
+  proved by a measurement rather than by the controller's opinion.
+- **A joint parked on its limit stops responding.** The gripper knuckle,
+  left at rest on its lower stop (0.0), never moves again for the rest of
+  the simulator run — goals still accepted, controller still active. This
+  was the "grippers stop following" defect and it is fixed by never asking
+  for 0.0: `GRIPPER_OPEN_POS` is 0.02 in all three packages that command a
+  gripper, and anything outside `0.02..0.8` is refused. If you add an
+  actuator, keep its resting positions off both stops.
 - **The cola slips out mid-pour** intermittently, at the 97° pour angle.
 
 Any autonomous caller must therefore treat "the action returned success" as

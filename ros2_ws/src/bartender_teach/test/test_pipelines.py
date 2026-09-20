@@ -14,7 +14,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bartender_teach.pipelines import (            # noqa: E402
-    MAX_GRIP_RAD, MAX_WAIT_S, Pipeline, PipelineError, STEP_KINDS, Step,
+    MAX_GRIP_RAD, MAX_WAIT_S, MIN_GRIP_RAD, MIN_WAIT_S, Pipeline,
+    PipelineError, STEP_KINDS, Step,
 )
 from bartender_teach.point_store import Point, PointStore   # noqa: E402
 
@@ -50,10 +51,26 @@ def test_an_unknown_kind_is_refused_and_lists_the_known_ones():
     assert 'goto' in str(exc.value)
 
 
-@pytest.mark.parametrize('kind,value', [('grip', 0.0), ('grip', MAX_GRIP_RAD),
-                                        ('wait', 0.0), ('wait', MAX_WAIT_S)])
+@pytest.mark.parametrize('kind,value', [('grip', MIN_GRIP_RAD),
+                                        ('grip', MAX_GRIP_RAD),
+                                        ('wait', MIN_WAIT_S),
+                                        ('wait', MAX_WAIT_S)])
 def test_the_bounds_themselves_are_allowed(kind, value):
     assert Step(kind, value).arg == value
+
+
+def test_a_grip_step_may_not_ask_for_the_joints_lower_limit():
+    """Asking for 0 is what kills the gripper for the rest of the run.
+
+    It reads like the obvious way to write "open", which is exactly why
+    it has to be refused rather than quietly turned into MIN_GRIP_RAD:
+    the file is what a person reads to find out what the robot will do.
+    See GRIPPER_LOWER_LIMIT in bartender_open/arm.py.
+    """
+    assert MIN_GRIP_RAD > 0.0
+    with pytest.raises(PipelineError) as exc:
+        Step('grip', 0.0)
+    assert f'{MIN_GRIP_RAD:g}' in str(exc.value)
 
 
 @pytest.mark.parametrize('kind,value', [

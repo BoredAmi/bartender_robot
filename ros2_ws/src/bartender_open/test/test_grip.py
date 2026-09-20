@@ -17,6 +17,7 @@ straight line for no visible reason.
 """
 import math
 import os
+import re
 import sys
 import types
 
@@ -28,9 +29,12 @@ sys.path.insert(0, os.path.join(REPO, 'ros2_ws', 'src', 'bartender_open'))
 
 from bartender_open.arm import (                        # noqa: E402
     Arm, GRASP_LOOSE, GRASP_PENETRATION, GRIPPER_FULLY_CLOSED,
-    GRIPPER_PRE_CLOSE_GAP, GRIPPER_SQUEEZE, PAD_GAP, SIDE_QUAT,
+    GRIPPER_LIMIT_MARGIN, GRIPPER_LOWER_LIMIT, GRIPPER_OPEN_POS,
+    GRIPPER_PRE_CLOSE_GAP, GRIPPER_SQUEEZE, GRIPPER_UPPER_LIMIT,
+    PAD_GAP, SIDE_QUAT,
     gap_for_knuckle, knuckle_for_gap, side_quat, wrap_to_pi,
 )
+from bartender_open import arm as arm_module            # noqa: E402
 from bartender_open import layout as L                  # noqa: E402
 
 # Measured in simulation by bartender_pour, for its own bottles, with no
@@ -341,3 +345,305 @@ def test_a_stall_far_wider_than_the_object_is_refused():
 
     reached, _ = grasp_with(follow, L.BEER_WIDTH)
     assert reached is None
+
+
+# ---------------------------------------------------------------------------
+# THE COMMAND BAND
+#
+# A knuckle left at rest ON its lower joint limit (0.0) stops responding to
+# gripper commands for the rest of the simulator run -- goals still accepted,
+# controller still active, the joint simply never moves again. It broke about
+# half of all opens before it was found. The measurements, and the list of
+# explanations ruled out, are beside GRIPPER_LOWER_LIMIT in arm.py.
+#
+# So the fix is a number, 0.02, and a number is exactly the kind of thing
+# somebody tidies back to 0.0 later. These tests are here to stop that.
+
+# What was measured, and what the band has to stay on the right side of.
+MEASURED_DEAD_AT = 0.0      # 10s parked here was already fatal
+MEASURED_SAFE_AT = 0.02     # 300s parked here was fine
+
+
+def test_the_open_position_is_not_the_joints_lower_limit():
+    """The whole fix, in one assertion."""
+    assert GRIPPER_OPEN_POS > GRIPPER_LOWER_LIMIT
+    assert GRIPPER_OPEN_POS != MEASURED_DEAD_AT
+
+
+def test_the_open_position_is_at_least_the_margin_measured_to_survive():
+    """0.02 is not a guess; it is the smallest dwell-tested safe value."""
+    assert GRIPPER_OPEN_POS >= MEASURED_SAFE_AT
+
+
+def test_opening_still_clears_everything_this_robot_picks_up():
+    """The margin has to be free, or it is not free.
+
+    0.02 rad costs 1.8mm of the 85mm the pads open to, and the widest
+    thing gripped here is 38.6mm. If that ever stopped being negligible
+    the fix would need rethinking rather than nudging.
+    """
+    open_gap = gap_for_knuckle(GRIPPER_OPEN_POS)
+    assert open_gap > max(L.OPENER_SHAFT, L.BEER_WIDTH) + 0.02
+    assert gap_for_knuckle(GRIPPER_LOWER_LIMIT) - open_gap < 0.002
+
+
+@pytest.mark.parametrize('width', [L.OPENER_SHAFT, L.BEER_WIDTH])
+@pytest.mark.parametrize('name,follow', [
+    ('tracks perfectly', lambda command: command),
+    ('jammed at the stop', lambda command: 0.0),
+    ('stops on the object', None),          # filled in below
+])
+def test_no_command_a_grasp_sends_lands_on_a_joint_limit(name, follow, width):
+    """Drive the real close loop and watch every goal it produces.
+
+    Checking the constant is not enough: grasp() derives its own commands
+    from the pad-gap curve and from where the fingers got to, and `max(0.0,
+    ...)` was how the old floor got in. This looks at what actually goes out.
+    """
+    if follow is None:
+        stall = knuckle_for_gap(width)
+
+        def follow(command):
+            return min(command, stall)
+
+    _, fake = grasp_with(follow, width)
+    assert fake.commands, 'the loop sent nothing, so it checked nothing'
+    assert min(fake.commands) >= GRIPPER_OPEN_POS, (
+        f'{name}: grasp sent {min(fake.commands):.4f}, which is at or below '
+        f'the open stop the gripper does not come back from')
+    assert max(fake.commands) <= GRIPPER_UPPER_LIMIT
+
+
+def test_send_gripper_refuses_a_command_on_the_open_stop():
+    """Refused, not clamped -- and the client must never see it.
+
+    Substituting 0.02 for a requested 0.0 would keep the robot working and
+    hide the mistake from whoever wrote it, which is the trade this repo
+    makes the other way round everywhere else.
+    """
+    sent = []
+    fake = types.SimpleNamespace(
+        label='test arm',
+        gripper_client=types.SimpleNamespace(
+            send_goal_async=lambda goal: sent.append(goal)),
+        _log=lambda: types.SimpleNamespace(
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+    assert Arm._send_gripper(fake, GRIPPER_LOWER_LIMIT) is None
+    assert Arm._send_gripper(fake, GRIPPER_UPPER_LIMIT + 0.01) is None
+    assert sent == [], 'a refused command still reached the action client'
+
+
+def test_the_refusal_says_why_rather_than_just_no():
+    """Bare "out of range" would send the reader looking for a typo."""
+    messages = []
+    fake = types.SimpleNamespace(
+        label='test arm',
+        gripper_client=types.SimpleNamespace(send_goal_async=lambda goal: None),
+        _log=lambda: types.SimpleNamespace(
+            info=lambda *a: None, warn=lambda *a: None,
+            error=lambda m, *a: messages.append(m)))
+    Arm._send_gripper(fake, 0.0)
+    assert any('lower joint limit' in m for m in messages)
+
+
+def test_the_band_sits_inside_the_grippers_real_joint_limits():
+    """The URDF is where 0.0 and 0.8 come from; check they still are.
+
+    robotiq_description is an installed package this repo does not control.
+    If it ever re-specifies the knuckle, the constants above are describing
+    a joint that no longer exists.
+    """
+    macro = ('/opt/ros/humble/share/robotiq_description/urdf/'
+             'robotiq_2f_85_macro.urdf.xacro')
+    if not os.path.exists(macro):
+        pytest.skip(f'robotiq_description is not installed at {macro}')
+    text = open(macro).read()
+    match = re.search(
+        r'name="\$\{prefix\}robotiq_85_left_knuckle_joint".*?'
+        r'<limit lower="([-\d.]+)" upper="([-\d.]+)"',
+        text, re.S)
+    assert match, 'could not find the knuckle joint limit in the macro'
+    lower, upper = float(match.group(1)), float(match.group(2))
+    assert lower == GRIPPER_LOWER_LIMIT
+    assert upper == GRIPPER_UPPER_LIMIT
+    assert lower < GRIPPER_OPEN_POS <= GRIPPER_FULLY_CLOSED <= upper
+
+
+@pytest.mark.parametrize('module,relative', [
+    ('bartender_pour', 'bartender_pour/pour_action_server.py'),
+    ('bartender_teach', 'bartender_teach/teach_points.py'),
+])
+def test_the_other_packages_carry_the_same_open_position(module, relative):
+    """Three copies, because ROS packages here cannot import each other.
+
+    Same rule as the geometry in layout.py: the copies stay, and the test
+    makes them fail loudly when they drift. A package still opening to 0.0
+    would kill its gripper on the first run and nothing else would notice.
+    """
+    path = os.path.join(REPO, 'ros2_ws', 'src', module, relative)
+    if not os.path.exists(path):
+        pytest.skip(f'{module} is not in this checkout')
+    text = open(path).read()
+    match = re.search(r'^GRIPPER_LIMIT_MARGIN = ([\d.]+)', text, re.M)
+    assert match, f'{relative} has no GRIPPER_LIMIT_MARGIN'
+    assert float(match.group(1)) == GRIPPER_LIMIT_MARGIN
+    assert re.search(
+        r'^GRIPPER_OPEN_POS = GRIPPER_LOWER_LIMIT \+ GRIPPER_LIMIT_MARGIN',
+        text, re.M), (
+        f'{relative} does not derive GRIPPER_OPEN_POS from the limit and '
+        f'the margin, so the two can drift apart')
+
+
+@pytest.mark.parametrize('clamp', [0.25, 0.44, 0.19, 0.3, 0.55, 0.7929])
+def test_a_ramped_release_lands_exactly_on_the_open_position(clamp, monkeypatch):
+    """The last step must BE the target, not arithmetic that nearly is.
+
+    `start + (position - start) * i / steps` does not reach `position` in
+    binary floating point. Releasing from 0.25 computes
+    0.019999999999999990 for a target of 0.02 -- below GRIPPER_OPEN_POS, so
+    the guard in _send_gripper refuses it and the release fails. Two of
+    bartender_pour's three clamp angles do this. It was found by arithmetic
+    rather than by a run, and it would have been a mystery in a log.
+    """
+    sent = []
+    fake = types.SimpleNamespace(
+        label='test arm',
+        position=clamp,
+        gripper_position=lambda: clamp,
+        gripper_client=types.SimpleNamespace(
+            wait_for_server=lambda timeout_sec: True),
+        wait_for_gripper=lambda command=None, timeout_s=None: GRIPPER_OPEN_POS,
+        _send_gripper=lambda p: (
+            sent.append(p), types.SimpleNamespace(
+                accepted=True,
+                get_result_async=lambda: None))[1],
+        _log=lambda: types.SimpleNamespace(
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+    monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
+    monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
+    Arm.command_gripper(fake, GRIPPER_OPEN_POS, ramp=True)
+    assert sent[-1] == GRIPPER_OPEN_POS, (
+        f'the release ended on {sent[-1]!r}, not {GRIPPER_OPEN_POS!r}')
+    assert min(sent) >= GRIPPER_OPEN_POS
+
+
+def _messages_from_grasp(follow, width, start=None):
+    """Run the real close loop and collect what it said."""
+    said = []
+    fake = FakeGripper(follow)
+    if start is not None:
+        fake.position = start
+    fake._log = lambda: types.SimpleNamespace(
+        info=lambda *a: None, warn=lambda *a: None,
+        error=lambda m, *a: said.append(m))
+    return Arm.grasp(fake, width), said
+
+
+def test_a_gripper_that_moved_and_then_stopped_wide_is_not_blamed():
+    """The two faults the same test catches want opposite investigations.
+
+    A gripper that never budged is a gripper fault. Fingers that closed
+    perfectly well and then met something 25mm too wide are a PLACEMENT
+    fault -- the arm is not where it should be, or the thing is not. An
+    opener pick stopped with the pads 49.1mm apart on a 24.0mm shaft and
+    the message blamed the gripper, which is the wrong half of the robot.
+    """
+    stall = knuckle_for_gap(L.OPENER_SHAFT * 2)      # stops far too wide
+
+    reached, said = _messages_from_grasp(
+        lambda command: min(command, stall), L.OPENER_SHAFT)
+    assert reached is None
+    assert said, 'the loop failed silently'
+    assert not any('not following' in m for m in said), said
+    assert any('on something else' in m for m in said), said
+
+
+def test_a_gripper_that_never_moved_is_still_blamed():
+    """The other branch, which is the one the guard was written for."""
+    reached, said = _messages_from_grasp(
+        lambda command: GRIPPER_OPEN_POS, L.OPENER_SHAFT)
+    assert reached is None
+    assert any('not following' in m for m in said), said
+
+
+def test_the_two_diagnoses_are_mutually_exclusive():
+    """One failure, one explanation; two would be worse than none."""
+    for follow in (lambda command: GRIPPER_OPEN_POS,
+                   lambda command: min(command,
+                                       knuckle_for_gap(L.OPENER_SHAFT * 2))):
+        _, said = _messages_from_grasp(follow, L.OPENER_SHAFT)
+        assert len(said) == 1, said
+
+
+@pytest.mark.parametrize('ended_at,ok', [
+    (GRIPPER_OPEN_POS, True),
+    (0.0, False),
+    (0.005, False),
+    (0.019, True),
+])
+def test_an_open_that_ends_on_the_stop_is_reported_there_and_then(
+        ended_at, ok, monkeypatch):
+    """Overshoot can still put the joint on the stop; silence cannot.
+
+    Nothing commands 0.0 any more, but the ramp arrives at 0.5 rad/s and a
+    real open was traced brushing -0.0000 before settling at 0.0200. A
+    brush is survivable; being LEFT there is not, and the failure it causes
+    turns up minutes later as an unexplained "gripper not following". Say
+    it at the moment it happens.
+    """
+    said = []
+    fake = types.SimpleNamespace(
+        label='test arm',
+        gripper_position=lambda: ended_at,
+        gripper_client=types.SimpleNamespace(
+            wait_for_server=lambda timeout_sec: True),
+        wait_for_gripper=lambda command=None, timeout_s=None: ended_at,
+        _send_gripper=lambda p: types.SimpleNamespace(
+            accepted=True, get_result_async=lambda: None),
+        _log=lambda: types.SimpleNamespace(
+            info=lambda *a: None, warn=lambda *a: None,
+            error=lambda m, *a: said.append(m)))
+    monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
+    monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
+    assert Arm.command_gripper(fake, GRIPPER_OPEN_POS, ramp=True) is ok
+    if not ok:
+        assert any('lower stop' in m for m in said), said
+
+
+def test_a_ramp_from_a_reading_below_the_floor_is_not_refused(monkeypatch):
+    """A measured position is not a command, and must not become one.
+
+    The ramp interpolates from where the fingers ARE, and the knuckle can
+    be read below the band while it overshoots: a real open was traced
+    through 0.0048 on its way back up to 0.0200, and every value in that
+    dip is a reading some other thread can take. Interpolate a short move
+    from one and the first step lands under GRIPPER_OPEN_POS, where
+    _send_gripper refuses it -- so the command fails with "gripper goal
+    rejected", a message about the wrong thing entirely.
+
+    The window is narrow: it needs a reading in the dip AND a target close
+    enough that one step does not clear the floor. Both halves are real,
+    and the fix is to floor the interpolation origin.
+    """
+    sent = []
+    # Reads 0.0048 -- a literal sample from that trace -- then tracks, as
+    # the real joint does. A fake stuck down there would fail the
+    # end-of-move checks instead and would not be testing this at all.
+    reads = iter([0.0048])
+    fake = types.SimpleNamespace(
+        label='test arm',
+        gripper_position=lambda: next(reads, 0.030),
+        gripper_client=types.SimpleNamespace(
+            wait_for_server=lambda timeout_sec: True),
+        wait_for_gripper=lambda command=None, timeout_s=None: 0.030,
+        _send_gripper=lambda p: (
+            sent.append(p),
+            types.SimpleNamespace(accepted=True,
+                                  get_result_async=lambda: None))[1],
+        _log=lambda: types.SimpleNamespace(
+            info=lambda *a: None, warn=lambda *a: None, error=lambda *a: None))
+    monkeypatch.setattr(arm_module, 'block_on', lambda *a, **k: None)
+    monkeypatch.setattr(arm_module.time, 'sleep', lambda seconds: None)
+    assert Arm.command_gripper(fake, 0.030, ramp=True)
+    assert sent, 'nothing was sent'
+    assert min(sent) >= GRIPPER_OPEN_POS, sent

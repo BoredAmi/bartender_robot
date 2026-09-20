@@ -344,7 +344,39 @@ CARRY_MOUTH_Z = 0.61
 CARRY_SPOUT_Z = CARRY_MOUTH_Z + SPOUT_ABOVE_MOUTH
 POUR_SPOUT_Z = 0.14          # 50mm above the rim
 
-GRIPPER_OPEN_POS = 0.0    # radians; robotiq_85_left_knuckle_joint is revolute
+# NOT 0.0, AND THE DIFFERENCE MATTERS. robotiq_85_left_knuckle_joint is
+# revolute with limit=[0.0, 0.8], and a knuckle left at rest ON the lower
+# limit stops responding to gripper commands for the rest of the simulator
+# run -- goals still accepted, controller still active, joint never moves
+# again. Measured: parked at 0.000 for 10s it was already dead, while 0.020
+# survived 300s and 0.300 survived 90s; the upper limit is harmless. The
+# measurements and everything that was ruled out are written up beside
+# GRIPPER_LOWER_LIMIT in bartender_open/arm.py, which carries the same
+# constant. Both have to move together.
+#
+# WHAT THE MARGIN COSTS HERE, which is not nothing and should not be
+# written off as if it were. The pads open to 83.2mm at 0.02 rad instead of
+# 85.0 at 0.0, and the whiskey's 77.2mm flats are the tightest thing this
+# robot handles: the run-in clearance goes from 3.9mm a side to 3.0mm. That
+# is a 23% cut in the narrowest tolerance in the system, and it is accepted
+# because the alternative is a gripper that dies outright on roughly half
+# of runs.
+#
+# CHECKED, and only as far as this: two whiskey grasps on one run clamped
+# at 0.0899 and 0.0888 rad against the 0.089 this file has always recorded,
+# and both poured and released cleanly. So the narrower opening does not
+# move where the pads meet the bottle. The same run's COLA half failed
+# both times, to the slip this file's header already documents ("cola
+# lost: fingers have closed to 0.4400"), so it says nothing either way --
+# and a full whiskey and coke has NOT been completed since this changed.
+#
+# If that clearance ever becomes the binding constraint, the thing to do is
+# measure whether a smaller margin (0.01, 0.005) also survives a long dwell
+# -- neither has been tested -- not to quietly put this back to 0.0.
+GRIPPER_LOWER_LIMIT = 0.0       # from the URDF; do not command it
+GRIPPER_LIMIT_MARGIN = 0.02
+GRIPPER_OPEN_POS = GRIPPER_LOWER_LIMIT + GRIPPER_LIMIT_MARGIN
+GRIPPER_UPPER_LIMIT = 0.8       # from the URDF; safe to sit on, unlike 0.0
 GRIPPER_MAX_EFFORT = 100.0
 # Long enough for the fingers to stop against the bottle before the stall
 # angle is read back. These waits are wall-clock, so they mattered little when
@@ -882,13 +914,13 @@ class PourActionServer(Node):
         return False
 
     def _move_cartesian(self, x: float, y: float, z: float, quat=SIDE_QUAT,
-                        label: str = '') -> bool:
+                        label: str = '', may_stall: bool = False) -> bool:
         """Straight line of tool0 to the given base_link pose."""
         pose = Pose()
         pose.position.x, pose.position.y, pose.position.z = float(x), float(y), float(z)
         (pose.orientation.x, pose.orientation.y,
          pose.orientation.z, pose.orientation.w) = quat
-        return self._follow_cartesian([pose], label)
+        return self._follow_cartesian([pose], label, may_stall)
 
     def _pour_tilt(self, bottle: Bottle, reverse: bool = False) -> bool:
         """Rotate the grasped bottle to the pour angle, or back upright.
@@ -903,7 +935,8 @@ class PourActionServer(Node):
             [tilt_pose(a, bottle) for a in angles[1:]],
             f'{bottle.name} untilt' if reverse else f'{bottle.name} tilt')
 
-    def _follow_cartesian(self, poses, label: str = '') -> bool:
+    def _follow_cartesian(self, poses, label: str = '',
+                          may_stall: bool = False) -> bool:
         if self._joint_state is None:
             self.get_logger().error('no /joint_states yet, cannot seed Cartesian plan')
             return False
@@ -962,11 +995,37 @@ class PourActionServer(Node):
             return False
         result = self._block_on(goal_handle.get_result_async(), timeout_sec=60.0)
         if result is None or result.result.error_code.val != 1:
-            self.get_logger().error(f'Cartesian execution "{label}" failed')
+            code = result.result.error_code.val if result is not None else '-'
+            if may_stall:
+                # EXPECTED not to arrive; see the `lowering` step. The plan
+                # still had to come back complete above -- a short plan means
+                # the path was unreachable, which is an error however it ends
+                # -- but the controller refusing the last millimetres is the
+                # intended outcome here and is logged, not failed on.
+                self.get_logger().info(
+                    f'"{label}" did not arrive (error_code {code}), which is '
+                    f'what setting something down on the counter looks like')
+                return True
+            self.get_logger().error(
+                f'Cartesian execution "{label}" failed (error_code {code})')
             return False
         return True
 
     def _send_gripper(self, position: float):
+        """Send one gripper goal, refusing any that would park on the stop.
+
+        Refused rather than clamped, as elsewhere in this repo: quietly
+        substituting GRIPPER_OPEN_POS for a requested 0.0 would hide the
+        fact that 0.0 kills the joint for the rest of the run. Nothing here
+        asks for it any more; the guard is for whatever is written next.
+        """
+        if not GRIPPER_OPEN_POS <= float(position) <= GRIPPER_UPPER_LIMIT:
+            self.get_logger().error(
+                f'refusing gripper command {position:.4f} rad. The usable '
+                f'band is {GRIPPER_OPEN_POS:.2f}..{GRIPPER_UPPER_LIMIT:.2f}; '
+                f'resting on the lower joint limit stops the knuckle '
+                f'responding for the rest of the run.')
+            return None
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = GRIPPER_MAX_EFFORT
@@ -995,6 +1054,13 @@ class PourActionServer(Node):
         start = self._gripper_position()
         if math.isnan(start):
             start = GRIPPER_OPEN_POS
+        # Floored, because `start` is only the interpolation origin and a
+        # MEASURED one: the knuckle overshoots and can be read at 0.0178
+        # mid-brush (see GRIPPER_LOWER_LIMIT and bartender_open/arm.py). Left alone,
+        # the first interpolated step would come out under GRIPPER_OPEN_POS
+        # and _send_gripper would refuse it, failing the whole command with
+        # "gripper goal rejected" -- a message about the wrong thing.
+        start = max(GRIPPER_OPEN_POS, start)
         steps = (max(1, int(math.ceil(abs(position - start) / GRIPPER_CLOSE_STEP)))
                  if (clamp or ramp) else 1)
 
@@ -1002,7 +1068,17 @@ class PourActionServer(Node):
         for i in range(1, steps + 1):
             # Intermediate goals are not waited on: each preempts the last, and
             # past first contact a closing one stalls by design.
-            goal_handle = self._send_gripper(start + (position - start) * i / steps)
+            # The LAST step is `position` itself and not the same
+            # arithmetic as the others. start + (position - start) * i/steps
+            # does not land exactly on position in binary floating point:
+            # releasing from the whiskey's 0.25 clamp computes
+            # 0.019999999999999990 for a target of 0.02, which is below
+            # GRIPPER_OPEN_POS and gets refused -- so the release would
+            # fail, on two of the three clamp angles in this file, for a
+            # reason no log line would explain.
+            here = (position if i == steps
+                    else start + (position - start) * i / steps)
+            goal_handle = self._send_gripper(here)
             if goal_handle is None or not goal_handle.accepted:
                 self.get_logger().error('gripper goal rejected')
                 return False
@@ -1112,9 +1188,26 @@ class PourActionServer(Node):
             ('returning', self._move_cartesian,
              (bottle.grasp_x, bottle.xy[1], bottle.carry_z),
              {'label': f'{bottle.name} back'}),
+            # may_stall: THE BOTTLE STOPS ON THE COUNTER, so this move
+            # cannot arrive and must not be failed on.
+            #
+            # It looked like it arrived for as long as the arm controllers
+            # had no goal tolerance and reported SUCCEEDED wherever they
+            # stopped (see constraints: in bartender_description's
+            # controllers.yaml). With the tolerance in place the truth shows
+            # up: measured on a full pour, the place ends with wrist_1 held
+            # 0.029 rad -- about 6mm at the bottle -- short of its command,
+            # steady, not decaying. That is the arm pressing the bottle onto
+            # a counter that is already holding it up.
+            #
+            # Nothing is lost by exempting it. The evidence that the place
+            # worked is the bottle's own pose afterwards, not the
+            # controller's opinion, and this is the ONLY segment in the pour
+            # that ends in contact -- the retreat and clear that follow are
+            # free-air moves and are still checked.
             ('lowering', self._move_cartesian,
              (bottle.grasp_x, bottle.xy[1], bottle.grasp_height),
-             {'label': f'{bottle.name} place'}),
+             {'label': f'{bottle.name} place', 'may_stall': True}),
             ('releasing', self._command_gripper, (GRIPPER_OPEN_POS,),
              {'ramp': True}),
             # Straight back out along -X, the reverse of the run-in: the pads

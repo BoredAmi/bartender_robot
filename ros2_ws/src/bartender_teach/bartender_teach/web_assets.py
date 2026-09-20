@@ -171,7 +171,7 @@ PAGE = r"""<!DOCTYPE html>
       <button id="gclose" style="flex:1">Close</button>
     </div>
     <div class="row">
-      <input type="number" id="gpos" value="0.5" step="0.05" min="0" max="0.8">
+      <input type="number" id="gpos" value="0.5" step="0.05" min="0.02" max="0.8">
       <button id="gset">Close to</button>
     </div>
     <div class="sub">cartesian jog collision checking</div>

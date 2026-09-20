@@ -56,6 +56,54 @@ ur_arm_controller:
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 0.5
+      # PER-JOINT GOAL TOLERANCE. Without these the controller reports
+      # SUCCEEDED wherever it happens to stop, and every layer above
+      # inherits a success that means nothing.
+      #
+      # joint_trajectory_controller defaults each per-joint tolerance to
+      # 0.0, and 0.0 means NOT CHECKED rather than "must be exact". So with
+      # only the two settings above, the goal check passed trivially.
+      # Measured, driving arm A's wrist 250mm into the bar top: the
+      # controller returned SUCCEEDED, error_code 0, with wrist_1 0.756 rad
+      # (43 degrees) from its goal and shoulder_lift 0.572 off. The same
+      # defect at the skill level put a flange 267mm from where it was sent
+      # after MoveIt had computed the path at 100% and the controller had
+      # said "Goal reached, success!".
+      #
+      # 0.01 rad is chosen from both ends of the measured range, not taste:
+      #
+      #   free-space moves, 4s to 0.6s, settle to  <= 0.0009 rad
+      #   the jam above reached                       0.756  rad
+      #
+      # so this sits about 11x above the worst honest error and 75x below
+      # the failure it has to catch. It is also task-meaningful: 0.01 rad at
+      # the shoulder is ~8.5mm at full reach, and the whiskey bottle has
+      # 3.9mm of clearance a side in the gripper.
+      #
+      # NO `trajectory:` TOLERANCE, deliberately. That one polices
+      # |desired - actual| DURING the move, and it would abort the move that
+      # RECOVERS from a jam: measured, a free move peaks at 0.0045 (4s) to
+      # 0.0299 (0.6s), a jammed one at 1.3476 -- but driving back out of the
+      # jam peaked at 1.9505, because the trajectory starts from a setpoint
+      # left inside the worktop. Failing the recovery move is worse than
+      # catching the jam half a second earlier.
+      #
+      # Moves that are SUPPOSED not to arrive -- arm B pressing the opener
+      # onto the cap -- pass `may_stall` to Arm.follow_cartesian, which
+      # treats an aborted execution as the intended outcome. bartender_pour
+      # has no such move.
+      shoulder_pan_joint:
+        goal: 0.01
+      shoulder_lift_joint:
+        goal: 0.01
+      elbow_joint:
+        goal: 0.01
+      wrist_1_joint:
+        goal: 0.01
+      wrist_2_joint:
+        goal: 0.01
+      wrist_3_joint:
+        goal: 0.01
 
 b_ur_arm_controller:
   ros__parameters:
@@ -77,6 +125,22 @@ b_ur_arm_controller:
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 0.5
+      # Same tolerance and the same reasoning as ur_arm_controller above;
+      # the jam that exposed this was measured on arm A but the controllers
+      # are configured identically and arm B produced the 267mm flange
+      # error that started the investigation.
+      b_shoulder_pan_joint:
+        goal: 0.01
+      b_shoulder_lift_joint:
+        goal: 0.01
+      b_elbow_joint:
+        goal: 0.01
+      b_wrist_1_joint:
+        goal: 0.01
+      b_wrist_2_joint:
+        goal: 0.01
+      b_wrist_3_joint:
+        goal: 0.01
 
 gripper_controller:
   ros__parameters:

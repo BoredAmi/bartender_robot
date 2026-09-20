@@ -9,6 +9,7 @@ refuses.
 import math
 import os
 import sys
+import types
 
 import pytest
 
@@ -16,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bartender_teach.point_store import Point, PointStore   # noqa: E402
 from bartender_teach.teach_points import (                  # noqa: E402
-    ARMS, ARM_JOINTS, MAX_JOG_DEG, MAX_JOG_MM, Pendant,
+    ARMS, ARM_JOINTS, GRIPPER_OPEN_POS, MAX_JOG_DEG, MAX_JOG_MM, Pendant,
+    TeachNode,
 )
 from bartender_teach.tool_frames import (                   # noqa: E402,I100
     quat_about, quat_mul, quat_rotate,
@@ -293,7 +295,34 @@ def test_gripper_commands(pendant):
     pendant.dispatch('open')
     pendant.dispatch('close')
     pendant.dispatch('close 0.42')
-    assert pendant.node.gripper == pytest.approx([0.0, 0.5, 0.42])
+    assert pendant.node.gripper == pytest.approx(
+        [GRIPPER_OPEN_POS, 0.5, 0.42])
+
+
+def test_open_does_not_command_the_joints_lower_limit(pendant):
+    """`open` used to send 0.0, which killed the gripper for the run.
+
+    Goals went on being accepted and the joint never moved again. See
+    GRIPPER_LOWER_LIMIT in bartender_open/arm.py for the measurements.
+    """
+    pendant.dispatch('open')
+    assert pendant.node.gripper == [GRIPPER_OPEN_POS]
+    assert GRIPPER_OPEN_POS > 0.0
+
+
+def test_a_gripper_command_on_the_lower_limit_is_refused():
+    """Refused rather than clamped, like the jog bounds.
+
+    Driven through the REAL TeachNode.command_gripper rather than the
+    pendant's FakeNode, because the fake is what would otherwise be
+    under test and it has no bound. The guard returns before it touches
+    anything on self, so an empty stand-in is enough.
+    """
+    ok, why = TeachNode.command_gripper(types.SimpleNamespace(), 0.0)
+    assert not ok
+    assert 'lower limit' in why
+    ok, why = TeachNode.command_gripper(types.SimpleNamespace(), 0.9)
+    assert not ok
 
 
 @pytest.mark.parametrize('line', ['quit', 'exit', 'q', 'QUIT'])
@@ -535,7 +564,7 @@ def test_the_gripper_commands_become_steps_carrying_their_arm(pendant):
     pendant.dispatch('close 0.3')
     pendant.dispatch('open')
     assert [(s.kind, s.arg, s.arm) for s in pendant.recording.steps] == \
-        [('grip', 0.3, 'a'), ('grip', 0.0, 'a')]
+        [('grip', 0.3, 'a'), ('grip', GRIPPER_OPEN_POS, 'a')]
 
 
 def test_a_gripper_step_records_the_selected_arm_not_the_default(tmp_path):

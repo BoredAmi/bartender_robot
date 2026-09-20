@@ -58,7 +58,17 @@ STEP_KINDS = ('goto', 'grip', 'wait')
 #
 # 0.8 rad is the 2F-85 closed against itself; there is nothing above it to
 # command. A `wait` longer than a minute is a typo for seconds, not a plan.
+#
+# The FLOOR is not zero, and that is the interesting one. The knuckle
+# joint's lower limit is 0.0, and a knuckle left at rest on it stops
+# responding to gripper commands for the rest of the simulator run --
+# measured, dead after a 10s dwell at 0.000, fine after 300s at 0.020.
+# The write-up is beside GRIPPER_LOWER_LIMIT in bartender_open/arm.py.
+# A pipeline is a file a person reads to find out what the robot will
+# do, so `grip: 0` is refused here rather than quietly turned into 0.02.
+MIN_GRIP_RAD = 0.02
 MAX_GRIP_RAD = 0.8
+MIN_WAIT_S = 0.0
 MAX_WAIT_S = 60.0
 
 
@@ -108,11 +118,13 @@ class Step:
             raise PipelineError(
                 f'a {kind} step needs a number, got {arg!r}')
         value = float(arg)
-        limit = MAX_GRIP_RAD if kind == 'grip' else MAX_WAIT_S
-        unit = 'rad' if kind == 'grip' else 's'
-        if not 0.0 <= value <= limit:
+        lo, hi, unit = ((MIN_GRIP_RAD, MAX_GRIP_RAD, 'rad')
+                        if kind == 'grip'
+                        else (MIN_WAIT_S, MAX_WAIT_S, 's'))
+        if not lo <= value <= hi:
             raise PipelineError(
-                f'{kind} {value:g}{unit} is outside 0..{limit:g}{unit}')
+                f'{kind} {value:g}{unit} is outside '
+                f'{lo:g}..{hi:g}{unit}')
         return value
 
     def __eq__(self, other):

@@ -9,7 +9,7 @@ this project a debugging session.
 ```bash
 cd ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 colcon build
 source install/setup.bash
 ros2 launch bartender_bringup bartender_sim.launch.py            # with GUI
 ros2 launch bartender_bringup bartender_sim.launch.py headless:=true
@@ -31,12 +31,24 @@ ros2 action send_goal /open_bottle bartender_pour_interfaces/action/OpenBottle \
 cd ros2_ws && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 colcon test && colcon test-result
 ```
 
-**`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is required.** Without it you get
-`ModuleNotFoundError: No module named '_pytest.scope'`, which is a clash
-between the system pytest and a user-installed plugin and has nothing to do
-with this code. `colcon test` does not set it for you.
+**`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is required, on the BUILD as well as
+the test.** Without it you get `ModuleNotFoundError: No module named
+'_pytest.scope'`, a clash between the system pytest and a user-installed
+`anyio` plugin that has nothing to do with this code.
 
-950 tests, none of which need a robot. They run in about 12 seconds, so
+Setting it only on `colcon test` is not enough, and the way it fails is
+nasty. `ament_cmake_pytest` probes pytest at CMake **configure** time; that
+probe hits the same clash, and `ament_add_pytest_test` then registers
+**nothing, silently**. `bartender_description`'s `render` and
+`pep257_repo_style` tests had never run once because of it — the package
+reported "3 tests" and they were all linters. Build with the variable set
+and it goes from 3 to 6 suites.
+
+If a test count drops after you touch a CMakeLists, check
+`build/<pkg>/CTestTestfile.cmake` for the test you expect before assuming
+your change is fine.
+
+1018 tests, none of which need a robot. They run in about 14 seconds, so
 there is no excuse for not running them.
 
 The `fingertip/` generator is standalone with its own venv:
@@ -141,15 +153,28 @@ before believing a result.
 that text — including the script defining it. Bracket the first character:
 `pkill -f '[i]gn gazebo'`. This has killed its own caller twice here.
 
+**Never leave a joint parked on its limit.** The gripper knuckle is
+`limit=[0.0, 0.8]`. Drive it to 0.0 — the obvious way to write "open" — and
+leave it there, and it stops responding to commands for the rest of the run:
+goals still accepted, controller still `active`, joint never moves again.
+Measured, 0.000 was dead after a 10 s dwell while 0.020 survived 300 s; the
+upper limit is harmless. That is why `GRIPPER_OPEN_POS` is 0.02 and not 0,
+in three packages, and why commands outside the band are refused.
+
+If you add an actuator, give its resting positions a margin off both stops
+and dwell-test it before believing it works.
+
 **One open per simulator run.** Gazebo's `DetachableJoint` cannot re-attach,
 so once the cap is off you must restart to try again.
 
-**The sim runs at roughly 0.1× real time** on an 8-core box, so a pour takes
+**The sim runs at roughly 0.2× real time** on an 8-core box (measured off
+`/clock`, steady at 0.21 over a two-minute window), so a pour takes
 a few minutes of wall clock for ~25 s of simulated time.
 
 ## Before you send a change
 
-- [ ] `colcon test` passes (with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`)
+- [ ] `colcon test` passes, with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` on the
+      **build** as well as the test, and the total has not gone *down*
 - [ ] New tests fail when you break the thing they test
 - [ ] Tuned constants carry a note saying what was measured
 - [ ] Geometry changed in `layout.py`, not in a copy
