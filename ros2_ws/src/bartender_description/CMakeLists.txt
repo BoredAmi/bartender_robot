@@ -12,7 +12,7 @@ find_package(xacro REQUIRED)
 find_package(robot_state_publisher REQUIRED)
 
 install(
-  DIRECTORY urdf config rviz scripts meshes
+  DIRECTORY urdf config scripts meshes
   DESTINATION share/${PROJECT_NAME}
 )
 
