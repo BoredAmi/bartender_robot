@@ -20,6 +20,7 @@ single most-tuned thing in this project -- PAD_MU alone is the difference
 between 3/6 drinks poured and 7/7. Most of that tuning lives in comments;
 these tests hold the parts of it that are structural.
 """
+import math
 import os
 import subprocess
 import sys
@@ -113,6 +114,34 @@ def test_the_two_arms_joints_do_not_collide(robot):
     """Every joint name unique, or the controllers fight over them."""
     names = [joint.get('name') for joint in robot.findall('joint')]
     assert len(names) == len(set(names))
+
+
+@pytest.mark.parametrize(('name', 'reference', 'topic'), [
+    ('arm_a_wrist_camera', 'tool0',
+     '/bartender/arm_a/wrist_camera/image_raw'),
+    ('arm_b_wrist_camera', 'b_tool0',
+     '/bartender/arm_b/wrist_camera/image_raw'),
+])
+def test_wrist_camera_looks_along_gripper_approach(robot, name, reference,
+                                                   topic):
+    gazebo = next(tag for tag in robot.findall('gazebo')
+                  if tag.find(f"sensor[@name='{name}']") is not None)
+    sensor = gazebo.find(f"sensor[@name='{name}']")
+
+    assert gazebo.get('reference') == reference
+    assert sensor.findtext('topic') == topic
+    assert sensor.findtext('camera/image/format') == 'R8G8B8'
+
+    _roll, pitch, yaw = [float(value) for value in
+                         sensor.findtext('pose').split()[3:]]
+    # The first column of Rz(yaw) * Ry(pitch) * Rx(roll) transforms the
+    # camera's local +X viewing axis into its parent tool0 frame.
+    optical_axis = (
+        math.cos(yaw) * math.cos(pitch),
+        math.sin(yaw) * math.cos(pitch),
+        -math.sin(pitch),
+    )
+    assert optical_axis == pytest.approx((0.0, 0.0, 1.0), abs=1e-5)
 
 
 # -- the pads ---------------------------------------------------------------

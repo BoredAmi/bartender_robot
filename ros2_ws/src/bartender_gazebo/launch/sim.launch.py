@@ -137,6 +137,18 @@ def generate_launch_description():
         output='screen',
     )
 
+    camera_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            '/bartender/arm_a/wrist_camera/image_raw'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/bartender/arm_b/wrist_camera/image_raw'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
+        ],
+        output='screen',
+    )
+
     return LaunchDescription([
         headless_arg,
         gz_sim,
@@ -145,4 +157,5 @@ def generate_launch_description():
         spawn_robot,
         clock_bridge,
         beer_bridge,
+        camera_bridge,
     ])

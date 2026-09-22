@@ -137,6 +137,50 @@
     <origin xyz="${arm_b_xyz}" rpy="${arm_b_rpy}"/>
   </xacro:bartender_arm>
 
+  <!-- Gazebo cameras look along local +X. Pitching -90 degrees aligns that
+       optical axis with tool0 +Z, the gripper's approach direction. -->
+  <gazebo reference="tool0">
+    <sensor name="arm_a_wrist_camera" type="camera">
+      <pose>0.08 0 0.10 0 -1.5708 0</pose>
+      <always_on>true</always_on>
+      <update_rate>5</update_rate>
+      <topic>/bartender/arm_a/wrist_camera/image_raw</topic>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>5.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="b_tool0">
+    <sensor name="arm_b_wrist_camera" type="camera">
+      <pose>0.08 0 0.10 0 -1.5708 0</pose>
+      <always_on>true</always_on>
+      <update_rate>5</update_rate>
+      <topic>/bartender/arm_b/wrist_camera/image_raw</topic>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>5.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
   <!-- NOTE on gripper pads and friction. This file is NOT rendered with
        xacro directly; both sim.launch.py and move_group.launch.py run it
        through bartender_description/scripts/render_bartender_urdf.py, which
