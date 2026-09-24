@@ -202,6 +202,61 @@ Three things this must get right:
   simulator ground truth and confidence is 1.0. When perception replaces it
   the field already exists, and callers written against it do not change.
 
+#### Camera perception (`server --perception ...`)
+
+Where bottle poses come from is a startup choice, reported back as the
+top-level `"perception"` field. There is no silent fallback between them:
+
+| mode | bottle stations | other stations |
+|---|---|---|
+| `ground_truth` (default) | sim ground truth, as above | sim ground truth |
+| `camera` | stand depth camera only; no data means `unknown` | `unknown` -- nothing looks at them yet |
+| `compare` (sim only) | camera, plus `ground_truth_xy` and `error_mm` | sim ground truth |
+
+`compare` refuses to start without the Gazebo pose topic, and `camera` never
+reads it, so a hardware run cannot quietly be answered by a simulator.
+
+Only `kind: "bottle"` stations are observed. Each gets:
+
+```json
+{ "id": "cola", "kind": "bottle", "xy": [0.08, -0.15],
+  "observation": "observed", "occupied": true,
+  "in_place": true, "offset_mm": 3.1,
+  "pose": { "xyz": [0.0812, -0.1529, 0.9], "source": "camera",
+            "confidence": 0.81, "fit_rms_mm": 2.4 },
+  "reason": null, "frame_age_s": 0.12,
+  "valid_px": 2210, "foreground_px": 1035, "confidence": 0.81 }
+```
+
+- **`observation`** is `observed`, `missing` or `unknown`, and the
+  difference between the last two is the point. `missing` (`occupied:
+  false`) needs positive evidence: valid depth that passed *through* the
+  space the bottle would fill. `unknown` (`occupied: null`, `in_place:
+  null`) is everything else: no frame, a frame older than 1 s, a calibration
+  frame that does not match `CameraInfo`, distorted or unsupported depth,
+  depth holes (dark, glass and shiny surfaces are stereo-poor), or something
+  in front. `reason` says which. **Treat `null` as "don't know", never as
+  "empty".**
+- **`offset_mm`** is the distance from the fitted bottle centre to the
+  station's `xy`. The centre comes from fitting that bottle's known
+  cross-section (circle for cola and beer, square for the whiskey) to the
+  visible body, not from the nearest surface.
+- **`in_place`** is `offset_mm <= TOL_MM`. `TOL_MM` is set from *measured*
+  error (`scripts/perception_error.py`, then repeated placements on the real
+  bar), comfortably above the p99 -- not from a depth-sensor datasheet.
+  Until that has been measured it is a 15 mm placeholder.
+- **`confidence`** is `min(1, foreground_px / px a full body would cover)`,
+  reduced by how badly the shape fit (`fit_rms_mm`). It is a coverage and
+  fit-quality score for ranking and thresholds, **not a probability**.
+  `missing` reports 1.0: the see-through evidence was sufficient.
+
+Calibration is `T_world_optical`, the pose of the camera **optical** frame
+(z forward, x right, y down) in world, mapping optical points to world, in `bartender_api/config/stand_camera.yaml`, checked against
+`CameraInfo.header.frame_id` on every frame. The sim copy is derived from
+the camera model in `bar_world.sdf`; on hardware,
+`scripts/calibrate_stand_camera.py` writes one and `--camera-config` points
+the server at it.
+
 ### 2. Feasibility — "could you?"
 
 ```

@@ -1,6 +1,6 @@
 """HTTP entry point for bartender_api.
 
-    ros2 run bartender_api server
+    ros2 run bartender_api server [--perception ground_truth|camera|compare]
 
     GET  /world      what is on the bar, and who can reach it
     GET  /state      joints, tool pose, gripper, per arm
@@ -31,14 +31,19 @@ warning every time.
 """
 import argparse
 import json
+import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
+from bartender_open import layout as L
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CameraInfo, Image
 from tf2_msgs.msg import TFMessage
 
 from bartender_teach.point_store import (
@@ -46,7 +51,7 @@ from bartender_teach.point_store import (
 )
 from bartender_teach.teach_points import TeachNode
 
-from . import feasibility, movement, state_view, world
+from . import feasibility, movement, perception, state_view, world
 
 # Same topic, same QoS, same reasoning as open_action_server's _on_poses:
 # depth 1 and best-effort, because a queued backlog is a lie about where
@@ -74,8 +79,78 @@ class PoseCache(Node):
         with self._lock:
             return self._poses.get(name)
 
+    def has_any(self):
+        with self._lock:
+            return bool(self._poses)
 
-def make_handler(pose_cache, teach_node, move_bridge):
+
+DEPTH_TOPIC = '/bartender/stand_camera/depth'
+CAMERA_INFO_TOPIC = '/bartender/stand_camera/camera_info'
+
+
+class DepthCache(Node):
+    """Latest stand-camera depth and CameraInfo, decoded once per arriving image."""
+
+    def __init__(self):
+        super().__init__('bartender_api_depth')
+        self._image = None
+        self._received = None
+        self._info = None
+        self._decoded = (None, None, None)   # (image, info, (depth, K))
+        self._lock = threading.Lock()
+        self.create_subscription(Image, DEPTH_TOPIC, self._on_image, FRESH)
+        self.create_subscription(
+            CameraInfo, CAMERA_INFO_TOPIC, self._on_info, FRESH)
+
+    def _on_image(self, msg):
+        with self._lock:
+            self._image = msg
+            # Arrival time, not header.stamp: sim stamps are sim time, this node is wall time.
+            self._received = time.monotonic()
+
+    def _on_info(self, msg):
+        with self._lock:
+            self._info = msg
+
+    def frame(self):
+        """Return (perception.Frame, None) or (None, why there is none)."""
+        with self._lock:
+            image, received, info = self._image, self._received, self._info
+            cached_image, cached_info, decoded = self._decoded
+        if image is None:
+            return None, f'no depth image on {DEPTH_TOPIC}'
+        if info is None:
+            return None, f'no CameraInfo on {CAMERA_INFO_TOPIC}'
+        if (info.width, info.height) != (image.width, image.height):
+            return None, 'CameraInfo size does not match the depth image'
+        if cached_image is not image or cached_info is not info:
+            decoded = (perception.decode_depth(
+                image.encoding, image.data, image.height, image.width,
+                image.step, image.is_bigendian),
+                perception.intrinsics(info.k, info.d))
+            with self._lock:
+                self._decoded = (image, info, decoded)
+        depth, K = decoded
+        if depth is None:
+            return None, f'unsupported depth encoding {image.encoding!r}'
+        if K is None:
+            return None, 'depth is not rectified (non-zero distortion)'
+        return perception.Frame(depth, K, info.header.frame_id,
+                                time.monotonic() - received), None
+
+
+def make_observer(depth_cache, calib):
+    def observe(station):
+        frame, why_not = depth_cache.frame()
+        if frame is None:
+            return perception.unknown(why_not)
+        return perception.observe(frame, calib, perception.PROFILES[station],
+                                  L.STATIONS[station])
+    return observe
+
+
+def make_handler(pose_cache, teach_node, move_bridge, observe=None,
+                 mode='ground_truth'):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -107,7 +182,7 @@ def make_handler(pose_cache, teach_node, move_bridge):
         def do_GET(self):
             path = self.path.split('?')[0].rstrip('/') or '/'
             if path == '/world':
-                self._send(200, world.build(pose_cache.get))
+                self._send(200, world.build(pose_cache.get, observe, mode))
             elif path == '/state':
                 self._send(200, state_view.build(teach_node))
             else:
@@ -159,6 +234,35 @@ def make_handler(pose_cache, teach_node, move_bridge):
     return Handler
 
 
+def _load_calibration(mode, path):
+    """Return (Calibration or None, ok); ground_truth mode needs none."""
+    if mode == 'ground_truth':
+        return None, True
+    path = path or os.path.join(get_package_share_directory('bartender_api'),
+                                'config', 'stand_camera.yaml')
+    try:
+        return perception.load_calibration(path), True
+    except (OSError, KeyError, ValueError) as exc:
+        print(f'cannot load camera calibration {path}: {exc}',
+              file=sys.stderr)
+        return None, False
+
+
+def _attach_observer(executor, calib):
+    if calib is None:
+        return None
+    depth_cache = DepthCache()
+    executor.add_node(depth_cache)
+    return make_observer(depth_cache, calib)
+
+
+def _wait_for_ground_truth(pose_cache, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not pose_cache.has_any() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return pose_cache.has_any()
+
+
 def main(args=None):
     parser = argparse.ArgumentParser(
         prog='bartender_api', description=__doc__.split('\n')[0])
@@ -166,8 +270,19 @@ def main(args=None):
                         help='interface to bind (default 127.0.0.1; '
                              '0.0.0.0 exposes this to the network)')
     parser.add_argument('--port', type=int, default=8090)
+    parser.add_argument('--perception', choices=world.MODES,
+                        default='ground_truth',
+                        help='where /world bottle poses come from '
+                             '(compare is sim only)')
+    parser.add_argument('--camera-config', default=None,
+                        help='stand camera calibration YAML (default: the '
+                             'sim one in this package\'s config/)')
     # ros2 run passes --ros-args through; argparse must not choke on it.
     opts, _ = parser.parse_known_args(sys.argv[1:] if args is None else args)
+
+    calib, ok = _load_calibration(opts.perception, opts.camera_config)
+    if not ok:
+        return 1
 
     rclpy.init(args=None)
     pose_cache = PoseCache()
@@ -175,7 +290,15 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(pose_cache)
     executor.add_node(teach_node)
+    observe = _attach_observer(executor, calib)
     threading.Thread(target=executor.spin, daemon=True).start()
+
+    if opts.perception == 'compare' and not _wait_for_ground_truth(pose_cache):
+        print(f'--perception compare needs sim ground truth, and there '
+              f'is nothing on {POSE_TOPIC} after 10s', file=sys.stderr)
+        executor.shutdown()
+        rclpy.try_shutdown()
+        return 1
 
     if not teach_node.wait_for_state(timeout=10.0):
         print('warning: no /joint_states after 10s -- serving anyway, '
@@ -196,7 +319,8 @@ def main(args=None):
     try:
         server = ThreadingHTTPServer(
             (opts.host, opts.port),
-            make_handler(pose_cache, teach_node, move_bridge))
+            make_handler(pose_cache, teach_node, move_bridge, observe,
+                         opts.perception))
     except OSError as exc:
         print(f'cannot bind {opts.host}:{opts.port}: {exc}', file=sys.stderr)
         executor.shutdown()
@@ -207,7 +331,7 @@ def main(args=None):
 
     shown = '127.0.0.1' if opts.host in ('0.0.0.0', '') else opts.host
     print(f'\n  bartender_api:  http://{shown}:{opts.port}')
-    print('    GET  /world')
+    print(f'    GET  /world      (bottle poses: {opts.perception})')
     print('    GET  /state')
     print('    POST /can        {"verb": "pour"|"open", "args": {...}}')
     print('    POST /move/point {"arm": "a", "point": "whiskey_approach"}')

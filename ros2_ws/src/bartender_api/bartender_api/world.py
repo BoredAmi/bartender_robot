@@ -66,13 +66,47 @@ def _slot_id(xy):
     return f'slot_{index:+d}'
 
 
-def build(pose_lookup):
-    """Assemble the /world document.
+MODES = ('ground_truth', 'camera', 'compare')
 
-    `pose_lookup(model_name) -> (x, y, z) or None` is the only live input,
-    so this function itself needs no ROS to test -- see test_world.py,
-    which drives it with a plain dict.
-    """
+# Unobserved stations are unknown, never "unoccupied", so camera mode has no silent fallback.
+NOT_OBSERVED = {'observation': 'unknown', 'occupied': None, 'pose': None,
+                'reason': 'not observed by any camera'}
+
+
+def _ground_truth(live):
+    return {
+        'occupied': live is not None,
+        'pose': None if live is None else {
+            'xyz': list(live),
+            'source': 'sim_ground_truth',
+            'confidence': 1.0,
+        },
+    }
+
+
+def _live_fields(name, kind, live, observe, mode):
+    if mode == 'ground_truth' or (mode == 'compare' and kind != 'bottle'):
+        return _ground_truth(live)
+    if kind != 'bottle':
+        return dict(NOT_OBSERVED)
+    fields = observe(name)
+    if mode == 'compare':
+        fields['ground_truth_xy'] = None if live is None else list(live[:2])
+        fields['error_mm'] = None
+        if live is not None and fields['pose'] is not None:
+            cam = fields['pose']['xyz']
+            fields['error_mm'] = round(
+                1000.0 * ((cam[0] - live[0]) ** 2
+                          + (cam[1] - live[1]) ** 2) ** 0.5, 1)
+    return fields
+
+
+def build(pose_lookup, observe=None, mode='ground_truth'):
+    """Assemble /world from injected pose_lookup/observe, with bottle poses per `mode`."""
+    if mode not in MODES:
+        raise ValueError(f'mode must be one of {MODES}, not {mode!r}')
+    if mode != 'ground_truth' and observe is None:
+        raise ValueError(f'mode {mode!r} needs an observe callable')
     stations = []
     for name in sorted(L.STATIONS):
         xy = L.STATIONS[name]
@@ -83,12 +117,7 @@ def build(pose_lookup):
             'kind': kind,
             'xy': list(xy),
             'reachable_by': _reachable_by(kind, xy),
-            'occupied': live is not None,
-            'pose': None if live is None else {
-                'xyz': list(live),
-                'source': 'sim_ground_truth',
-                'confidence': 1.0,
-            },
+            **_live_fields(name, kind, live, observe, mode),
         })
     for xy in L.free_slots():
         stations.append({
@@ -101,6 +130,7 @@ def build(pose_lookup):
         })
     return {
         'frame': 'world',
+        'perception': mode,
         'counter': {
             'centre': list(L.COUNTER_CENTRE),
             'size': list(L.COUNTER_SIZE),

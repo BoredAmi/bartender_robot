@@ -126,3 +126,55 @@ def test_counter_matches_layout():
     doc = world.build(lambda name: None)
     assert doc['counter']['top_z'] == L.COUNTER_Z
     assert doc['counter']['size'] == list(L.COUNTER_SIZE)
+
+
+GROUND_TRUTH = {'jack_daniels_bottle': (0.08, -0.30, 0.9),
+                'cola_bottle': (0.08, -0.15, 0.9),
+                'beer_bottle': (0.08, 0.0, 0.9),
+                'serving_glass': (0.20, -0.55, 0.9),
+                'bottle_opener': (0.10, 0.40, 0.9)}
+
+
+def _camera_sees(xy_by_station):
+    def observe(station):
+        xy = xy_by_station.get(station)
+        if xy is None:
+            return {'observation': 'unknown', 'occupied': None, 'pose': None}
+        return {'observation': 'observed', 'occupied': True,
+                'pose': {'xyz': [xy[0], xy[1], 0.9], 'source': 'camera'}}
+    return observe
+
+
+def test_camera_mode_never_falls_back_to_ground_truth():
+    doc = world.build(GROUND_TRUTH.get, _camera_sees({}), 'camera')
+    stations = _stations_by_id(doc)
+    assert doc['perception'] == 'camera'
+    for name in ('whiskey', 'cola', 'beer', 'glass', 'opener'):
+        assert stations[name]['occupied'] is None, name
+        assert stations[name]['pose'] is None, name
+
+
+def test_camera_mode_takes_bottle_poses_from_the_camera_only():
+    observe = _camera_sees({'cola': (0.083, -0.15)})
+    stations = _stations_by_id(world.build(GROUND_TRUTH.get, observe, 'camera'))
+    assert stations['cola']['pose'] == {'xyz': [0.083, -0.15, 0.9],
+                                        'source': 'camera'}
+    assert stations['glass']['observation'] == 'unknown'
+
+
+def test_compare_mode_reports_the_error_against_ground_truth():
+    observe = _camera_sees({'cola': (0.083, -0.146)})
+    stations = _stations_by_id(world.build(GROUND_TRUTH.get, observe, 'compare'))
+    assert stations['cola']['ground_truth_xy'] == [0.08, -0.15]
+    assert stations['cola']['error_mm'] == 5.0
+    assert stations['whiskey']['error_mm'] is None
+    assert stations['glass']['pose']['source'] == 'sim_ground_truth'
+
+
+def test_unknown_mode_or_missing_observer_is_refused():
+    for mode, observe in (('lidar', _camera_sees({})), ('camera', None)):
+        try:
+            world.build(GROUND_TRUTH.get, observe, mode)
+        except ValueError:
+            continue
+        raise AssertionError(f'{mode} with {observe} was accepted')
