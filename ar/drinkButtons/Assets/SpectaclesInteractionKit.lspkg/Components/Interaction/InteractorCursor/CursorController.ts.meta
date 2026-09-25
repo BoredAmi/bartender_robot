@@ -1,0 +1,47 @@
+- !<AssetImportMetadata/6fc8b917-6c60-0108-997a-ded4d631e075>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> 1fb55eff-0776-40eb-9395-a5ca2ec83366
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> 1fb55eff-0776-40eb-9395-a5ca2ec83366
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> 020a2c9e-316d-4421-b82a-07ec293de276
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/020a2c9e-316d-4421-b82a-07ec293de276>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: 7aec96c4-4844-48cd-9993-a23862d63603
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    useV2: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - useV2: true
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - '// @ui {"widget":"separator"}'
+    - '// @ui {"widget":"label", "label":"<span style=\"color: #60A5FA;\">Cursor Implementation</span>"}'
+    - '// @ui {"widget":"label", "label":"<span style=\"color: #94A3B8; font-size: 11px;\">Select which cursor implementation to use for all interactors</span>"}'
+    - "// @input bool useV2 = true {\"label\":\"Use V2 Cursor\", \"hint\":\"Switches to the V2 cursor implementation, designed to make targeting free-floating and distant objects easier, at a higher performance cost.\\n\\n- Targeting: Blends its position based on multiple nearby interactables, making it easier to aim between targets.\\n- Visuals: Fades out when not aimed near any interactable objects. Also enables a 'Ray' visual that can be set per-Interactable/InteractionPlane.\\n- Performance: This version is more computationally expensive due to its multi-target analysis.\"}"

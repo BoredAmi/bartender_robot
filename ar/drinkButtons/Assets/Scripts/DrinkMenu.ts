@@ -74,10 +74,12 @@ export class DrinkMenu extends BaseScriptComponent {
         this.order(DRINKS[i]);
       });
     });
+    this.setVisible(false);
+    // HandType is undefined outside Spectacles (e.g. a phone-mode preview); the editor click still opens the menu.
+    if (!GestureModule.HandType) return;
     for (const hand of [GestureModule.HandType.Left, GestureModule.HandType.Right]) {
       this.gestures.getPalmTapDownEvent(hand).add(() => this.open());
     }
-    this.setVisible(false);
   }
 
   private open() {
