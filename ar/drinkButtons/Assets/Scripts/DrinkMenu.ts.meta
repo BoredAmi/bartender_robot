@@ -58,7 +58,7 @@
     -
       {}
   InputLines:
-    - '// @input SceneObject[] buttons {"hint":"Beer, Cyder, Jagermeister -- in that order; each needs a collider"}'
+    - '// @input SceneObject[] buttons {"hint":"Beer, Cyder, Jagermeister, Whiskey, Cola -- in that order; each needs a collider"}'
     - // @input Component.Text status
     - '// @input float curlRatio = 1.4 {"hint":"Finger counts as curled when tip-to-wrist < this x knuckle-to-wrist"}'
     - '// @input float thumbUpMin = 0.3 {"hint":"Thumb tip must rise this fraction of hand size above the thumb knuckle"}'
