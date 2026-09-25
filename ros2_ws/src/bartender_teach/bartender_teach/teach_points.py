@@ -36,7 +36,6 @@ threading.Event rather than spin_until_future_complete, which grabs rclpy's
 process-global executor and deadlocks against our own.
 """
 import math
-import os
 import shlex
 import sys
 import threading
@@ -60,7 +59,10 @@ from sensor_msgs.msg import JointState
 
 from bartender_teach.pipelines import Pipeline, PipelineError, Step
 from bartender_teach.point_store import (
-    Point, PointStore, PointStoreError, default_points_path,
+    Point, PointStore, PointStoreError, default_points_path, points_path_for,
+)
+from bartender_teach.robot_control import (
+    DASHBOARD_VERBS, MODE_POWER_OFF, MODE_RUNNING, RobotControl,
 )
 from bartender_teach.tool_frames import (
     TOOL0, TOOLS, get_tool, quat_about, quat_rotate, rotate_about_tcp,
@@ -209,6 +211,9 @@ class TeachNode(Node):
             GetCartesianPath, 'compute_cartesian_path', callback_group=cb)
         self._fk = self.create_client(
             GetPositionFK, 'compute_fk', callback_group=cb)
+        # Power, program, speed slider, freedrive. Real robot only; see
+        # robot_control.py.
+        self.robot = RobotControl(self, cb)
 
         # The browser front end polls state twice a second, and tool_pose()
         # blocks on a service call. Refreshing it on a timer instead keeps
@@ -479,6 +484,14 @@ HELP = """\
   pipeline drop [N]        remove the last step, or step N
   pipeline export [NAME]   print as a Python literal
   tool [NAME]              list tool centre points, or select one
+
+  robot                    real robot: mode, safety, program, speed
+  robot on | off           power on and release brakes / power off
+  robot play|pause|stop    the External Control program on the robot
+  robot unlock             clear a protective stop
+  robot resend             restart the control script (headless mode)
+  speed [PCT]              show the speed, or set the UR speed slider
+  freedrive [on|off]       move the arm by hand; ROS lets go of it
   safety [on|off]          collision checking for Cartesian jogs
   export [NAME]            print as a pour_action_server source snippet
   file                     which point file is being edited
@@ -487,6 +500,9 @@ HELP = """\
 Everything except `list`, `show` and `goto` acts on the SELECTED arm. Jog and
 pose axes are in that arm's own base frame, which for arm B is b_base_link --
 the two arms do not share an origin.
+
+The robot, speed and freedrive commands only work on the real robot
+(workcell_real or workcell_twin); in the simulation they say so.
 
 While recording, `save`, `goto`, `open` and `close` also append a step, and
 `save` with no name auto-names it after the pipeline. Jogs never become
@@ -544,6 +560,32 @@ class Pendant:
                 f'there is no pose to jog FROM. Is move_group running? Joint '
                 f'jogs still work.')
         return pose
+
+    def _refuse_in_freedrive(self):
+        """Refuse a motion command the robot cannot carry out right now.
+
+        Freedrive: not only because the move would fail (the trajectory
+        controller is off): a goal that did start would move an arm somebody
+        is holding.
+
+        Program not running: the driver switches the arm controller off
+        whenever the control program on the robot stops, and MoveIt then
+        reports only "error_code -4" (CONTROL_FAILED) after planning a path
+        it cannot send anywhere. Seen on the real cell as a screen of those
+        and no hint why. So it is refused before anything is planned, with
+        the reason.
+        """
+        robot = self.node.robot
+        if robot.freedrive:
+            raise ValueError('freedrive is on: the arm is being moved by '
+                             'hand. `freedrive off` first.')
+        st = robot.status()
+        if st['real'] and st['program_running'] is False:
+            raise ValueError(
+                'the control program is not running on the robot, so ROS '
+                'cannot move the arm. Headless (headless_mode:=true): '
+                '`robot resend`. Otherwise load the External Control '
+                'program on the UR pendant and `robot play`.')
 
     def _report(self, ok, why, did):
         print(f'  {did}' if ok else f'  FAILED: {why}')
@@ -739,6 +781,7 @@ class Pendant:
         """
         if not args:
             raise ValueError('goto needs a point name')
+        self._refuse_in_freedrive()
         point = self.store.get(args[0])
         arm = self._arm_for(point)
         target = dict(zip(arm.joints, point.joints_in_order(list(arm.joints))))
@@ -774,6 +817,7 @@ class Pendant:
             raise ValueError('jog needs an axis and an amount, e.g. `jog z 20` '
                              'or `jog j1 -15`')
         axis, amount = args[0].lower(), self._number(args[1], 'jog amount')
+        self._refuse_in_freedrive()
 
         if axis.startswith('j') and axis[1:].isdigit():
             index = int(axis[1:]) - 1
@@ -1015,6 +1059,8 @@ class Pendant:
         if not len(pipeline):
             print(f'  {pipeline.name} has no steps')
             return
+        if not dry:
+            self._refuse_in_freedrive()
         missing = pipeline.missing_points(self.store)
         if missing:
             # Checked before anything moves. Finding out at step 9 of 11
@@ -1183,6 +1229,97 @@ class Pendant:
                   + (f'  # {step.note}' if step.note else ''))
         print('  ]')
 
+    # -- the real robot ---------------------------------------------------
+
+    def cmd_robot(self, args):
+        """Show the real robot's state, or power it / run its program."""
+        robot = self.node.robot
+        if not args:
+            st = robot.status()
+            if not st['real']:
+                print('  no robot status is being published. This is the '
+                      'simulation, or the')
+                print('  driver is not connected (workcell_real / '
+                      'workcell_twin, then Play on the UR pendant).')
+                return
+            prog = {True: 'running', False: 'NOT running'}.get(
+                st['program_running'], 'unknown')
+            speed = ('unknown' if st['speed_scaling'] is None
+                     else f"{st['speed_scaling']:.0f}%")
+            print(f"  robot mode     {st['robot_mode'] or 'unknown'}")
+            print(f"  safety         {st['safety_mode'] or 'unknown'}")
+            print(f'  program        {prog}'
+                  + ('' if st['program_running'] else
+                     '   (ROS cannot move the arm until it is)'))
+            print(f'  speed          {speed}')
+            print(f"  freedrive      {'ON' if st['freedrive'] else 'off'}")
+            return
+        verb = args[0].lower()
+        if verb in ('on', 'off'):
+            if verb == 'off' and robot.freedrive:
+                raise ValueError('freedrive is on; `freedrive off` first')
+            print('  powering on and releasing the brakes (can take 30s) ...'
+                  if verb == 'on' else '  powering off ...')
+            ok, why = robot.set_mode(
+                MODE_RUNNING if verb == 'on' else MODE_POWER_OFF)
+            self._report(ok, why, 'robot is ' + (
+                'on, brakes released. `robot play` starts the program.'
+                if verb == 'on' else 'powered off'))
+            return
+        if verb == 'resend':
+            ok, why = robot.resend()
+            self._report(ok, why, why)
+            return
+        if verb in DASHBOARD_VERBS:
+            ok, why = robot.dashboard(verb)
+            self._report(ok, why, why)
+            return
+        raise ValueError(
+            f'no robot command {args[0]!r}; try on, off, resend, '
+            + ', '.join(sorted(DASHBOARD_VERBS)) + ', or `robot` alone')
+
+    def cmd_speed(self, args):
+        """Show the speed, or set the UR speed slider in percent."""
+        robot = self.node.robot
+        if not args:
+            st = robot.status()
+            print('  speed: ' + ('unknown (real robot only)'
+                                 if st['speed_scaling'] is None
+                                 else f"{st['speed_scaling']:.0f}%"))
+            return
+        pct = self._number(args[0].rstrip('%'), 'speed')
+        # Refused, not clamped, like the jogs: `speed 500` is a typo.
+        if not 0 < pct <= 100:
+            raise ValueError(f'speed must be above 0 and at most 100 (percent), '
+                             f'got {pct:g}')
+        ok, why = robot.set_speed(pct / 100.0)
+        self._report(ok, why, f'speed slider at {pct:g}%')
+
+    def cmd_freedrive(self, args):
+        """Let go of the arm so it can be moved by hand, or take it back."""
+        robot = self.node.robot
+        if not args:
+            print(f"  freedrive is {'ON' if robot.freedrive else 'off'}")
+            return
+        word = args[0].lower()
+        if word not in ('on', 'off'):
+            raise ValueError('freedrive takes on or off')
+        ok, why = robot.set_freedrive(word == 'on')
+        self._report(ok, why, (
+            'freedrive ON: hold the arm and move it; `save` still works. '
+            '`freedrive off` when done.' if word == 'on' else
+            'freedrive off: ROS has the arm again'))
+
+    def release(self):
+        """Leave the robot as ROS expects it; called when the pendant exits.
+
+        A pendant that quits with freedrive on would leave the trajectory
+        controller off, and every other client would find the arm dead.
+        """
+        if self.node.robot.freedrive:
+            ok, why = self.node.robot.set_freedrive(False)
+            print('  freedrive off' if ok else f'  could not end freedrive: {why}')
+
     def cmd_file(self, args):
         extra = (f', {len(self.store.pipelines)} pipeline(s)'
                  if self.store.pipelines else '')
@@ -1199,6 +1336,7 @@ class Pendant:
         'tool': cmd_tool, 'arm': cmd_arm,
         'record': cmd_record, 'stop': cmd_stop, 'run': cmd_run,
         'wait': cmd_wait,
+        'robot': cmd_robot, 'speed': cmd_speed, 'freedrive': cmd_freedrive,
         'pipeline': cmd_pipeline, 'pl': cmd_pipeline,
         'help': cmd_help, '?': cmd_help,
     }
@@ -1262,7 +1400,7 @@ def main(args=None):
     path = default_points_path()
     argv = sys.argv[1:]
     if '--file' in argv:
-        path = os.path.abspath(os.path.expanduser(argv[argv.index('--file') + 1]))
+        path = points_path_for(argv[argv.index('--file') + 1])
 
     try:
         store = PointStore.load(path)
@@ -1285,7 +1423,11 @@ def main(args=None):
             print('no /joint_states after 10s -- is the robot up?',
                   file=sys.stderr)
             return 1
-        Pendant(node, store).run()
+        pendant = Pendant(node, store)
+        try:
+            pendant.run()
+        finally:
+            pendant.release()
     finally:
         executor.shutdown()
         node.destroy_node()

@@ -17,6 +17,7 @@ RUN apt-get update \
         ros-humble-ros2-controllers \
         ros-humble-ur-description \
         ros-humble-ur-moveit-config \
+        ros-humble-ur-robot-driver \
         ros-humble-ur-simulation-gz \
     && rm -rf /var/lib/apt/lists/*
 

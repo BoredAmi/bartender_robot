@@ -22,9 +22,17 @@ import pytest
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG = os.path.join(HERE, os.pardir, 'config', 'controllers.yaml')
+CONFIG_DIR = os.path.join(HERE, os.pardir, 'config')
 
-ARM_CONTROLLERS = ('ur_arm_controller', 'b_ur_arm_controller')
+# (file, controller). The two-armed bar, then the one-armed workcell in sim
+# and on the real robot. The workcell files carry the same tolerances for
+# the same reason; the real one is where a silent success would cost most.
+ARM_CONTROLLERS = (
+    ('controllers.yaml', 'ur_arm_controller'),
+    ('controllers.yaml', 'b_ur_arm_controller'),
+    ('workcell_controllers.yaml', 'ur_arm_controller'),
+    ('workcell_ur_controllers.yaml', 'ur_arm_controller'),
+)
 UR_JOINTS = ('shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
              'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint')
 
@@ -36,21 +44,32 @@ WORST_HONEST_ERROR = 0.0009
 MEASURED_JAM = 0.756
 
 
-@pytest.fixture(scope='module')
-def config():
-    with open(CONFIG) as fh:
+def load(name):
+    with open(os.path.join(CONFIG_DIR, name)) as fh:
         return yaml.safe_load(fh)
 
 
+@pytest.fixture(scope='module')
+def config():
+    return load('controllers.yaml')
+
+
 def params(config, controller):
+    if isinstance(controller, tuple):
+        config, controller = load(controller[0]), controller[1]
     return config[controller]['ros__parameters']
+
+
+def prefix_of(controller):
+    name = controller[1] if isinstance(controller, tuple) else controller
+    return 'b_' if name.startswith('b_') else ''
 
 
 @pytest.mark.parametrize('controller', ARM_CONTROLLERS)
 def test_every_arm_joint_has_a_goal_tolerance(config, controller):
     """A joint with no entry is a joint the controller will not check."""
     constraints = params(config, controller)['constraints']
-    prefix = 'b_' if controller.startswith('b_') else ''
+    prefix = prefix_of(controller)
     for joint in UR_JOINTS:
         name = prefix + joint
         assert name in constraints, (
@@ -63,7 +82,7 @@ def test_every_arm_joint_has_a_goal_tolerance(config, controller):
 def test_the_tolerance_is_above_the_worst_honest_error(config, controller):
     """Tight enough is not the only risk; too tight fails good moves."""
     constraints = params(config, controller)['constraints']
-    prefix = 'b_' if controller.startswith('b_') else ''
+    prefix = prefix_of(controller)
     for joint in UR_JOINTS:
         goal = constraints[prefix + joint]['goal']
         assert goal > WORST_HONEST_ERROR * 2, (
@@ -75,7 +94,7 @@ def test_the_tolerance_is_above_the_worst_honest_error(config, controller):
 def test_the_tolerance_is_well_below_a_real_jam(config, controller):
     """It has to catch the failure it was added for, with margin."""
     constraints = params(config, controller)['constraints']
-    prefix = 'b_' if controller.startswith('b_') else ''
+    prefix = prefix_of(controller)
     for joint in UR_JOINTS:
         goal = constraints[prefix + joint]['goal']
         assert goal < MEASURED_JAM / 10.0, (
@@ -95,7 +114,7 @@ def test_no_trajectory_tolerance_is_set(config, controller):
     move that recovers from it, which is worse.
     """
     constraints = params(config, controller)['constraints']
-    prefix = 'b_' if controller.startswith('b_') else ''
+    prefix = prefix_of(controller)
     for joint in UR_JOINTS:
         assert 'trajectory' not in constraints[prefix + joint], (
             f'{prefix + joint} has a trajectory tolerance; see this test\'s '
@@ -113,8 +132,20 @@ def test_both_arms_are_configured_identically(config):
     make one arm quietly more forgiving than the other.
     """
     tolerances = []
-    for controller in ARM_CONTROLLERS:
+    for controller in ('ur_arm_controller', 'b_ur_arm_controller'):
         constraints = params(config, controller)['constraints']
-        prefix = 'b_' if controller.startswith('b_') else ''
+        prefix = prefix_of(controller)
         tolerances.append([constraints[prefix + j]['goal'] for j in UR_JOINTS])
     assert tolerances[0] == tolerances[1]
+
+
+def test_the_workcell_matches_the_bar():
+    """The workcell's arm is arm A, and its tolerances came from there.
+
+    A divergence would be one of the two drifting, not a decision.
+    """
+    bar = params(None, ('controllers.yaml', 'ur_arm_controller'))
+    for name in ('workcell_controllers.yaml', 'workcell_ur_controllers.yaml'):
+        arm = params(None, (name, 'ur_arm_controller'))
+        assert ([arm['constraints'][j]['goal'] for j in UR_JOINTS]
+                == [bar['constraints'][j]['goal'] for j in UR_JOINTS]), name

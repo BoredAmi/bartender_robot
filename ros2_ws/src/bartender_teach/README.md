@@ -98,6 +98,13 @@ teach> export whiskey_pregrasp
 | `run NAME [dry]` | replay one; `dry` lists the steps without moving |
 | `pipeline ...` | list, show, rm, step, drop, export — see below |
 | `export [NAME]` | print as a `pour_action_server` source snippet |
+| `robot [on\|off\|play\|pause\|stop\|unlock]` | real robot only: status, power, the program on the controller |
+| `speed [PCT]` | real robot only: show the speed, or set the UR speed slider |
+| `freedrive [on\|off]` | real robot only: move the arm by hand; motion commands are refused meanwhile |
+
+The last three talk to `ur_robot_driver` (`robot_control.py`) and are in the
+browser's Robot panel as buttons. In the simulation they say they are not
+available. See [docs/WORKCELL.md](../../../docs/WORKCELL.md).
 
 ## Record mode: building a pipeline while you teach
 
@@ -335,7 +342,10 @@ points into `install/bartender_teach/share/...`, run `colcon build`, and watch
 the install directory be repopulated from source. Writing to source means a
 rebuild copies the points forward instead of over them.
 
-`$BARTENDER_POINTS` overrides this, and so does `--file`.
+`$BARTENDER_POINTS` overrides this, and so does `--file`. A bare name is a
+file in the same config directory: `--file workcell` is
+`config/workcell_points.yaml`, the one-arm workcell's points, kept apart
+from the bar's because the action servers read this one.
 
 Angles are radians. `joints` is a mapping, not a list, because
 `/joint_states` publishes joints in controller-registration order — which is

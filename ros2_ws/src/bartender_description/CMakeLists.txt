@@ -25,6 +25,8 @@ if(BUILD_TESTING)
   # The arm controllers' goal tolerances: load-bearing, and their
   # absence was silent. See the test's own docstring.
   ament_add_pytest_test(controller_limits test/test_controller_limits.py)
+  # The one-armed workcell the real robot is brought up from.
+  ament_add_pytest_test(workcell test/test_workcell.py)
 
   # pep257 runs as a pytest test instead of through ament_lint_auto, only to
   # get at its --ignore list: ament's default set leaves D213 ON while

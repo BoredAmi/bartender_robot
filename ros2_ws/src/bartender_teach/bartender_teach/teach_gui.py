@@ -36,7 +36,7 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
 from bartender_teach.point_store import (
-    PointStore, PointStoreError, default_points_path,
+    PointStore, PointStoreError, points_path_for,
 )
 from bartender_teach.teach_points import ARMS, Pendant, TeachNode
 from bartender_teach.tool_frames import TOOLS, tcp_from_tool0
@@ -118,6 +118,9 @@ class Bridge:
             # know which case it is in.
             'tip': None if tip is None else list(tip[0]),
             'gripper': joints.get(selected.gripper_joint),
+            # The real robot's mode, program and speed; 'real' is False in
+            # the simulation and the page hides the panel's status then.
+            'robot': self.node.robot.status(),
             'arm': selected.key,
             'arm_label': selected.label,
             'frame': selected.frame,
@@ -227,11 +230,13 @@ def main(args=None):
                              '0.0.0.0 exposes the robot to the network)')
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--file', default=None,
-                        help='point file (default: the shipped config)')
+                        help='point file, or a bare name: `workcell` is '
+                             'config/workcell_points.yaml (default: the '
+                             'shipped taught_points.yaml)')
     # ros2 run passes --ros-args through; argparse must not choke on it.
     opts, _ = parser.parse_known_args(sys.argv[1:] if args is None else args)
 
-    path = opts.file or default_points_path()
+    path = points_path_for(opts.file)
     try:
         store = PointStore.load(path)
     except PointStoreError as exc:
@@ -275,6 +280,7 @@ def main(args=None):
     except KeyboardInterrupt:
         print('\nstopping')
     finally:
+        bridge.pendant.release()
         server.shutdown()
         server.server_close()
         executor.shutdown()

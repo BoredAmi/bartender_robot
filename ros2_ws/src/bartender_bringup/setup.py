@@ -28,6 +28,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'twin_mirror = bartender_bringup.twin_mirror:main',
         ],
     },
 )

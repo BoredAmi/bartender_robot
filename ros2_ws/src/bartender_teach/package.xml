@@ -12,6 +12,13 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <!-- The real robot's controls (robot_control.py). All come with
+       ur_robot_driver; the pendant runs without them in simulation. -->
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>ur_dashboard_msgs</exec_depend>
+  <exec_depend>ur_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 

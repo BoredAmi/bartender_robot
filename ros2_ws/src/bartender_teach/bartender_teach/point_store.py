@@ -352,7 +352,7 @@ HEADER = """\
 """
 
 
-def _source_config_beside(share_dir):
+def _source_config_beside(share_dir, filename='taught_points.yaml'):
     """Map an installed share directory back to its source tree.
 
     Returns None if that tree is no longer on disk.
@@ -368,11 +368,11 @@ def _source_config_beside(share_dir):
             return None
         candidate = os.path.join(d, 'src', 'bartender_teach', 'config')
         if os.path.isdir(candidate):
-            return os.path.join(candidate, 'taught_points.yaml')
+            return os.path.join(candidate, filename)
     return None
 
 
-def default_points_path():
+def default_points_path(filename='taught_points.yaml'):
     """Where taught points live, preferring the SOURCE tree to the install.
 
     This ordering exists because of the obvious way to lose a teaching
@@ -385,10 +385,11 @@ def default_points_path():
     them.
 
     $BARTENDER_POINTS overrides everything, for a scratch file or a second
-    workspace.
+    workspace. `filename` picks another file in the same config directory
+    (see points_path_for).
     """
     env = os.environ.get('BARTENDER_POINTS')
-    if env:
+    if env and filename == 'taught_points.yaml':
         return os.path.abspath(os.path.expanduser(env))
 
     share = None
@@ -399,9 +400,24 @@ def default_points_path():
         share = None
 
     if share:
-        return (_source_config_beside(share)
-                or os.path.join(share, 'config', 'taught_points.yaml'))
+        return (_source_config_beside(share, filename)
+                or os.path.join(share, 'config', filename))
 
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.normpath(
-        os.path.join(here, '..', 'config', 'taught_points.yaml'))
+    return os.path.normpath(os.path.join(here, '..', 'config', filename))
+
+
+def points_path_for(arg):
+    """Resolve a `--file` argument.
+
+    A bare name such as `workcell` means config/workcell_points.yaml, next to
+    taught_points.yaml and with the same source-before-install preference,
+    so each cell keeps its own points without anyone typing the path into
+    the source tree. Anything with a slash or a .yaml/.yml suffix is a path.
+    None means the default file.
+    """
+    if arg is None:
+        return default_points_path()
+    if os.sep in arg or arg.endswith(('.yaml', '.yml')):
+        return os.path.abspath(os.path.expanduser(arg))
+    return default_points_path(f'{arg}_points.yaml')

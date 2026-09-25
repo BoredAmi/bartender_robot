@@ -100,6 +100,11 @@ PAGE = r"""<!DOCTYPE html>
     font-size: 12.5px; font-weight: 600;
   }
   .hint { color: var(--dim); font-size: 11px; margin-top: 9px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  td.val.good { color: var(--ok); }
+  td.val.bad { color: var(--bad); font-weight: 600; }
+  button.on { background: var(--warn); border-color: var(--warn); color: #1b1200; }
   @media (max-width: 640px) { main { padding: 12px; } }
 </style>
 </head>
@@ -110,6 +115,10 @@ PAGE = r"""<!DOCTYPE html>
   <span id="status" style="color:var(--dim);font-size:12px"></span>
   <span class="path" id="file"></span>
 </header>
+<div class="warnbar" id="freedrivebar" hidden>
+  FREEDRIVE is on - the arm is limp and moves by hand. Jogs, Go and Run are
+  refused until it is turned off.
+</div>
 <div class="warnbar" id="safetybar" hidden>
   Collision checking is OFF - Cartesian jogs are not checked against anything.
 </div>
@@ -122,6 +131,31 @@ PAGE = r"""<!DOCTYPE html>
       Everything except Go acts on the selected arm, and jog axes are in
       <span id="armframe">that arm's</span> base frame - the two arms do not
       share an origin. Go always uses the arm its point was taught on.
+    </div>
+  </section>
+
+  <section>
+    <h2>Robot</h2>
+    <table id="robotstate"></table>
+    <div class="sub">power and program</div>
+    <div class="grid4">
+      <button id="r_on">Power on</button>
+      <button id="r_play" class="go" title="play the External Control program">Play</button>
+      <button id="r_resend" class="go"
+              title="headless mode: send the control script again">Resend script</button>
+      <button id="r_unlock">Unlock</button>
+      <button id="r_off" class="danger">Power off</button>
+      <button id="r_stop" class="danger">Stop</button>
+      <button id="r_pause">Pause</button>
+    </div>
+    <div class="sub">speed slider</div>
+    <div class="grid4" id="speeds"></div>
+    <div class="sub">hand guiding</div>
+    <div class="row"><button id="freedrive" style="flex:1"></button></div>
+    <div class="hint">
+      Real robot only (workcell_real or workcell_twin). ROS can move the arm
+      only while the program is running. The emergency stop is still the
+      button on the UR pendant.
     </div>
   </section>
 
@@ -311,6 +345,21 @@ function paintSteps() {
 paintSteps();
 
 // -- wiring -----------------------------------------------------------------
+$('#r_on').onclick = () => run('robot on');
+$('#r_off').onclick = () => {
+  if (confirm('Power the robot off? The brakes engage.')) run('robot off');
+};
+$('#r_play').onclick = () => run('robot play');
+$('#r_pause').onclick = () => run('robot pause');
+$('#r_stop').onclick = () => run('robot stop');
+$('#r_unlock').onclick = () => run('robot unlock');
+$('#r_resend').onclick = () => run('robot resend');
+[10, 25, 50, 100].forEach(v => {
+  const b = document.createElement('button');
+  b.textContent = v + '%';
+  b.onclick = () => run('speed ' + v);
+  $('#speeds').append(b);
+});
 $('#gopen').onclick = () => run('open');
 $('#gclose').onclick = () => run('close');
 $('#gset').onclick = () => run('close ' + Number($('#gpos').value));
@@ -367,6 +416,7 @@ function paint(s) {
     : (s.connected ? 'ready' : 'waiting for /joint_states');
   $('#file').textContent = s.file;
   $('#safetybar').hidden = s.safety;
+  paintRobot(s.robot || {});
   $('#safety').textContent = s.safety ? 'ON - click to disable' : 'OFF - click to enable';
   $('#safety').onclick = () => run('safety ' + (s.safety ? 'off' : 'on'));
 
@@ -456,6 +506,32 @@ function paint(s) {
   });
 
   paintPipelines(s, dis);
+}
+
+function paintRobot(r) {
+  $('#freedrivebar').hidden = !r.freedrive;
+  $('#freedrive').textContent = r.freedrive
+    ? 'Freedrive ON - click to give the arm back to ROS'
+    : 'Freedrive (move the arm by hand)';
+  $('#freedrive').className = r.freedrive ? 'on' : '';
+  $('#freedrive').onclick = () => run('freedrive ' + (r.freedrive ? 'off' : 'on'));
+  if (!r.real) {
+    $('#robotstate').innerHTML =
+      '<tr><td class="empty">no real robot connected (simulation?)</td></tr>';
+    return;
+  }
+  const row = (k, v, cls) =>
+    `<tr><td class="name">${k}</td><td class="val ${cls || ''}">${esc(v)}</td></tr>`;
+  const prog = r.program_running === null ? 'unknown'
+    : (r.program_running ? 'running' : 'NOT running');
+  $('#robotstate').innerHTML =
+    row('mode', r.robot_mode || 'unknown',
+        r.robot_mode === 'RUNNING' ? 'good' : 'bad') +
+    row('safety', r.safety_mode || 'unknown',
+        r.safety_mode === 'NORMAL' || r.safety_mode === 'REDUCED' ? 'good' : 'bad') +
+    row('program', prog, r.program_running ? 'good' : 'bad') +
+    row('speed', r.speed_scaling === null ? 'unknown'
+        : r.speed_scaling.toFixed(0) + '%');
 }
 
 function paintPipelines(s, dis) {

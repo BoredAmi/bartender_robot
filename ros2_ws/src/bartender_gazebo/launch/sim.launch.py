@@ -4,6 +4,9 @@ Loads the bar world (Fortress), spawns the two-armed bartender from
 bartender_description's xacro, and bridges /clock plus the topics the
 beer-opening sequence reads and writes.
 
+The arguments below let the one-armed workcell reuse it (see
+bartender_bringup/launch/workcell_sim.launch.py); the defaults are the bar.
+
 This is Phase 2's world/scene launch. It does NOT start ros2_control
 controllers or MoveIt -- see bartender_bringup for the full stack.
 """
@@ -13,7 +16,8 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration
+from launch.substitutions import (Command, FindExecutable, LaunchConfiguration,
+                                  PathJoinSubstitution)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -25,6 +29,19 @@ def generate_launch_description():
         description=('Run Gazebo server only, no GUI (avoids the Ignition Qt '
                      'GUI, useful when scripting/tuning against the sim).'),
     )
+    scene_args = [
+        DeclareLaunchArgument('world', default_value='bar_world.sdf',
+                              description='World file in bartender_gazebo/worlds.'),
+        DeclareLaunchArgument('description_file', default_value='bartender.urdf.xacro',
+                              description='xacro in bartender_description/urdf.'),
+        DeclareLaunchArgument('description_args', default_value='sim_ignition:=true',
+                              description='Arguments passed to that xacro.'),
+        # Where the description's `world` link goes. For the bar that is arm
+        # A's base; for the workcell it is the table's corner.
+        DeclareLaunchArgument('spawn_x', default_value='-0.45'),
+        DeclareLaunchArgument('spawn_y', default_value='-0.40'),
+        DeclareLaunchArgument('spawn_z', default_value='0.9'),
+    ]
     pkg_gazebo = get_package_share_directory('bartender_gazebo')
     pkg_description = get_package_share_directory('bartender_description')
 
@@ -37,7 +54,8 @@ def generate_launch_description():
     gz_resource_path = models_path if not existing_resource_path else \
         existing_resource_path + os.pathsep + models_path
 
-    world_path = os.path.join(pkg_gazebo, 'worlds', 'bar_world.sdf')
+    world_path = PathJoinSubstitution(
+        [pkg_gazebo, 'worlds', LaunchConfiguration('world')])
 
     # ROS2 Humble's setup.bash does not add /opt/ros/humble/lib to Gazebo's
     # own plugin search path, so gz_ros2_control-system (referenced by
@@ -71,11 +89,12 @@ def generate_launch_description():
     # pads, which has to replace the stock fingertip collision and so cannot be
     # done in xacro alone. move_group.launch.py renders the same way, so the
     # planner and the physics engine agree on the gripper's shape.
-    xacro_file = os.path.join(pkg_description, 'urdf', 'bartender.urdf.xacro')
+    xacro_file = PathJoinSubstitution(
+        [pkg_description, 'urdf', LaunchConfiguration('description_file')])
     render_script = os.path.join(pkg_description, 'scripts', 'render_bartender_urdf.py')
     robot_description_content = ParameterValue(
         Command([FindExecutable(name='python3'), ' ', render_script, ' ',
-                 xacro_file, ' sim_ignition:=true']),
+                 xacro_file, ' ', LaunchConfiguration('description_args')]),
         value_type=str,
     )
 
@@ -92,13 +111,17 @@ def generate_launch_description():
         arguments=[
             '-topic', 'robot_description',
             '-name', 'bartender_ur5e',
+            # The defaults are for the bar; the workcell passes the table
+            # corner instead. On the bar, this is:
             # Arm A's base, and therefore the origin of base_link, the
             # frame bartender_pour plans everything in. On the bar top
             # (z=0.9), at one end of the bar and 0.40 off its centreline.
             # Arm B stands 1.06 down the bar and 0.80 across, turned to
             # face back at arm A; the description states that relative to
             # this point. See the bar layout block in worlds/bar_world.sdf.
-            '-x', '-0.45', '-y', '-0.40', '-z', '0.9',
+            '-x', LaunchConfiguration('spawn_x'),
+            '-y', LaunchConfiguration('spawn_y'),
+            '-z', LaunchConfiguration('spawn_z'),
         ],
         output='screen',
     )
@@ -153,7 +176,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    return LaunchDescription([
+    return LaunchDescription(scene_args + [
         headless_arg,
         gz_sim,
         gz_sim_headless,

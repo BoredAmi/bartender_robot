@@ -40,6 +40,7 @@ sudo apt-get update && sudo apt-get install -y \
   ros-humble-ur-description \
   ros-humble-ur-simulation-gz \
   ros-humble-ur-moveit-config \
+  ros-humble-ur-robot-driver \
   ros-humble-robotiq-description \
   ros-humble-robotiq-controllers \
   ros-humble-ros2-control \
@@ -183,6 +184,109 @@ beer is refused with a message saying to restart the sim.
 If a `ros2` CLI command run immediately after a fresh `colcon build`
 reports "The passed action type is invalid" or otherwise misbehaves, it's a
 transient ament-index/discovery glitch, not a real error -- just retry it.
+
+## The workcell (one arm, the real robot)
+
+The robot that actually exists is **one UR5e with the 2F-85 on a 1.40 x 0.70
+table**, its base 0.35 in from one end and 0.35 in from the long side, so it
+sits on the table's centreline and has 1.05 of table in front of it:
+
+```
+   y
+   ^
+0.70 +------------------------------------------+
+     |                                          |
+0.35 |   (UR5e) -> +x                           |
+     |                                          |
+   0 +------------------------------------------+--> x
+     0   0.35                                 1.40      (table corner = `world`)
+```
+
+It is set up **alongside** the two-armed bar, not instead of it: the bar and
+its skills are untouched and still launch as above. The workcell has its own
+description (`bartender_description/urdf/workcell.urdf.xacro`), SRDF,
+controller configs, Gazebo world and two bringup launches. The one arm is
+arm A with its bare names (`ur_arm_controller`, `ur_manipulator`,
+`base_link`), so MoveIt, `bartender_teach` and anything taught carry over.
+
+The **table is a link of the robot description**, not only a Gazebo model,
+so MoveIt refuses to plan into it on the real robot too, from the first
+moment and without anything having to publish it. Checked: a goal that puts
+the wrist in the table fails with "contact between 'workcell_table' and
+'wrist_1_link'".
+
+```bash
+# simulation
+ros2 launch bartender_bringup workcell_sim.launch.py
+
+# the real stack with NO robot: mock hardware, same controllers and MoveIt
+ros2 launch bartender_bringup workcell_real.launch.py use_fake_hardware:=true
+
+# the real robot (10.42.0.100 by default)
+ros2 launch bartender_bringup workcell_real.launch.py
+
+# the real robot, with a Gazebo twin that copies it live
+ros2 launch bartender_bringup workcell_twin.launch.py
+```
+
+In the twin, the real robot leads and Gazebo follows: `twin_mirror` streams
+the real joint states onto the simulated arm (under `/twin`), and nothing in
+Gazebo can move the robot. Checked with the mock robot: after teach-pendant
+jogs the twin's six joints matched to 0.0000 rad, and its gripper followed
+0.4 -> 0.02 -> 0.7.
+
+Then drive it with the teach pendant tool, `ros2 run bartender_teach teach`
+(or `teach_gui`); see `bartender_teach/README.md`. On the real robot the
+pendant also powers it on (`robot on`), plays the program (`robot play`),
+sets the speed slider (`speed 20`) and switches freedrive (`freedrive on`).
+
+Two numbers are **guesses until someone measures the real cell**, and both
+are launch arguments: `arm_yaw` (which way the base faces; the xacro header
+says how to check it, and that the UR teach pendant's Base frame is turned
+180 degrees from ROS's `base_link`) and `table_height` (0.75). The gripper is
+**mocked** on the real robot until it is decided whether it is wired through
+the UR's tool connector or its own USB adapter (`gripper_fake_hardware:=false`
+plus `use_tool_communication:=true` for the former).
+
+### Connecting the real robot over Ethernet
+
+Step by step, with moving the arm and recovery, in
+[docs/WORKCELL.md](docs/WORKCELL.md). In short:
+
+1. **Install the driver**: `sudo apt install ros-humble-ur-robot-driver`, or
+   rebuild the Docker image, which now includes it. The container already
+   uses host networking, so nothing else changes there.
+2. **Put the PC and the robot on one subnet.** The robot is `10.42.0.100`
+   (set on the UR pendant: Settings > System > Network, static, netmask
+   255.255.255.0). This PC's wired port `eno1` is `10.42.0.67`, no gateway:
+   ```bash
+   sudo nmcli con add type ethernet ifname eno1 con-name ur5e \
+     ipv4.method manual ipv4.addresses 10.42.0.67/24 ipv6.method disabled
+   sudo nmcli con up ur5e
+   ping 10.42.0.100
+   ```
+3. **Install the External Control URCap** on the pendant. It ships with the
+   driver: `$(ros2 pkg prefix ur_robot_driver)/share/ur_robot_driver/resources/externalcontrol-1.0.5.urcap`,
+   copied to a USB stick. In Installation > URCaps > External Control, set
+   **Host IP to this PC's address** (10.42.0.67) and port 50002.
+   Make a program whose only node is External Control and save it.
+4. **Let the robot call back.** The driver listens on TCP 50001-50004; if a
+   firewall is on (`sudo ufw status`), allow those from the robot's IP.
+5. **Launch.** Our robot is in Remote Control mode and the launch defaults
+   to `headless_mode:=true`, so no pendant program is needed. The driver
+   prints *"Robot connected to reverse interface. Ready to receive control
+   commands."* when it is in control. (In Local mode: `headless_mode:=false`
+   and press play on the External Control program on the pendant.)
+6. **First moves**: speed slider at 10-20%, a hand on the e-stop, and check
+   `arm_yaw` before anything else. MoveIt's acceleration limits in
+   `joint_limits.yaml` were tuned for sim; the slider scales them down,
+   because `ur_arm_controller` is the driver's speed-scaled trajectory
+   controller.
+
+Worth doing once it is connected, not before: extract the robot's factory
+kinematic calibration with the `ur_calibration` package and pass it in, so
+MoveIt's arm matches this particular arm to the millimetre and not only the
+nominal UR5e.
 
 ## Status / what's still placeholder
 

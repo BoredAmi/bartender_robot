@@ -235,3 +235,39 @@ def test_pipelines_that_are_not_a_mapping_are_refused(tmp_path):
     path = write(tmp_path, 'points: {}\npipelines: 7\n')
     with pytest.raises(PointStoreError):
         PointStore.load(path)
+
+
+# -- which file ---------------------------------------------------------------
+
+def test_a_bare_file_name_is_a_points_file_in_the_config_directory():
+    """`--file workcell` must land beside taught_points.yaml, not in the cwd.
+
+    A path relative to wherever the pendant was started would scatter a
+    cell's points across whatever directories people happened to be in.
+    """
+    from bartender_teach.point_store import default_points_path, points_path_for
+    default_dir = os.path.dirname(default_points_path())
+    assert points_path_for('workcell') == os.path.join(
+        default_dir, 'workcell_points.yaml')
+
+
+@pytest.mark.parametrize('arg', ['./workcell.yaml', 'mine.yml', '/tmp/x/points.yaml'])
+def test_anything_that_looks_like_a_path_is_a_path(arg):
+    from bartender_teach.point_store import points_path_for
+    assert points_path_for(arg) == os.path.abspath(arg)
+
+
+def test_no_file_argument_means_the_default_file():
+    from bartender_teach.point_store import default_points_path, points_path_for
+    assert points_path_for(None) == default_points_path()
+
+
+def test_the_shipped_workcell_file_loads_with_home():
+    """It is what `--file workcell` opens on a fresh checkout."""
+    from bartender_teach.point_store import points_path_for
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), 'config', 'workcell_points.yaml')
+    store = PointStore.load(path, missing_ok=False)
+    assert set(store.points) == {'home'}
+    assert store.points['home'].group == 'ur_manipulator'
+    assert points_path_for('workcell').endswith('workcell_points.yaml')

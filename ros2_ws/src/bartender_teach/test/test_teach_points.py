@@ -76,6 +76,44 @@ def test_quat_mul_matches_composed_rotation():
 
 # -- a pendant with the robot stubbed out -----------------------------------
 
+class FakeRobot:
+    """RobotControl's surface, recording calls instead of making them."""
+
+    def __init__(self, real=True, running=True):
+        self.real = real
+        self.running = running
+        self.freedrive = False
+        self.calls = []
+
+    def status(self):
+        return {'real': self.real, 'robot_mode': 'RUNNING' if self.real else None,
+                'safety_mode': 'NORMAL' if self.real else None,
+                'program_running': self.running if self.real else None,
+                'speed_scaling': 25.0 if self.real else None,
+                'freedrive': self.freedrive}
+
+    def set_mode(self, target, play=False):
+        self.calls.append(('set_mode', target))
+        return True, ''
+
+    def dashboard(self, verb):
+        self.calls.append(('dashboard', verb))
+        return True, verb + ' done'
+
+    def resend(self):
+        self.calls.append(('resend',))
+        return True, 'sent'
+
+    def set_speed(self, fraction):
+        self.calls.append(('speed', fraction))
+        return True, ''
+
+    def set_freedrive(self, on):
+        self.calls.append(('freedrive', on))
+        self.freedrive = on
+        return True, ''
+
+
 class FakeNode:
     """Records what it was asked to do instead of doing it.
 
@@ -90,6 +128,7 @@ class FakeNode:
         self.cartesian = []
         self.gripper = []
         self.arms_asked = []
+        self.robot = FakeRobot()
 
     def arm_joints(self, arm=ARM_A):
         self.arms_asked.append(arm.key)
@@ -821,3 +860,110 @@ def test_export_prints_a_python_literal_of_the_steps(pendant, capsys):
 def test_an_unknown_pipeline_subcommand_is_refused(pendant, capsys):
     pendant.dispatch('pipeline frobnicate')
     assert 'frobnicate' in capsys.readouterr().out
+
+
+# -- the real robot's controls ----------------------------------------------
+
+def test_robot_on_and_off_go_through_set_mode(pendant):
+    from bartender_teach.robot_control import MODE_POWER_OFF, MODE_RUNNING
+    pendant.dispatch('robot on')
+    pendant.dispatch('robot off')
+    assert pendant.node.robot.calls == [('set_mode', MODE_RUNNING),
+                                        ('set_mode', MODE_POWER_OFF)]
+
+
+@pytest.mark.parametrize('verb', ['play', 'pause', 'stop', 'unlock'])
+def test_program_verbs_go_to_the_dashboard(pendant, verb):
+    pendant.dispatch(f'robot {verb}')
+    assert pendant.node.robot.calls == [('dashboard', verb)]
+
+
+def test_an_unknown_robot_verb_does_nothing(pendant, capsys):
+    pendant.dispatch('robot explode')
+    assert pendant.node.robot.calls == []
+    assert 'explode' in capsys.readouterr().out
+
+
+def test_robot_status_in_the_simulation_says_so(tmp_path, capsys):
+    node = FakeNode()
+    node.robot = FakeRobot(real=False)
+    Pendant(node, PointStore(str(tmp_path / 'p.yaml'))).dispatch('robot')
+    assert 'simulation' in capsys.readouterr().out
+
+
+def test_robot_status_on_the_real_robot(pendant, capsys):
+    pendant.dispatch('robot')
+    out = capsys.readouterr().out
+    assert 'RUNNING' in out and 'NORMAL' in out and '25%' in out
+
+
+def test_speed_is_percent(pendant):
+    pendant.dispatch('speed 25')
+    pendant.dispatch('speed 100%')
+    assert pendant.node.robot.calls == [('speed', 0.25), ('speed', 1.0)]
+
+
+@pytest.mark.parametrize('line', ['speed 0', 'speed -5', 'speed 250', 'speed x'])
+def test_bad_speeds_are_refused_not_clamped(pendant, line):
+    pendant.dispatch(line)
+    assert pendant.node.robot.calls == []
+
+
+def test_freedrive_refuses_every_motion_command(pendant):
+    pendant.store.add(Point('target', SAMPLE))
+    pendant.dispatch('freedrive on')
+    for line in ('jog z 10', 'jog j1 5', 'goto target'):
+        pendant.dispatch(line)
+    assert pendant.node.cartesian == []
+    assert pendant.node.joint_moves == []
+
+
+def test_freedrive_does_not_stop_saving(pendant):
+    """Saving where your hands put the arm is what freedrive is for."""
+    pendant.dispatch('freedrive on')
+    pendant.dispatch('save byhand')
+    assert 'byhand' in pendant.store
+
+
+def test_freedrive_off_gives_motion_back(pendant):
+    pendant.dispatch('freedrive on')
+    pendant.dispatch('freedrive off')
+    pendant.dispatch('jog z 10')
+    assert len(pendant.node.cartesian) == 1
+
+
+def test_power_off_is_refused_in_freedrive(pendant):
+    pendant.dispatch('freedrive on')
+    pendant.dispatch('robot off')
+    assert ('set_mode', 3) not in pendant.node.robot.calls
+
+
+def test_leaving_the_pendant_ends_freedrive(pendant):
+    pendant.dispatch('freedrive on')
+    pendant.release()
+    assert pendant.node.robot.freedrive is False
+    assert pendant.node.robot.calls[-1] == ('freedrive', False)
+
+
+def test_motion_is_refused_while_the_robot_program_is_stopped(tmp_path, capsys):
+    """Otherwise MoveIt plans, then fails with a bare error_code -4."""
+    node = FakeNode()
+    node.robot = FakeRobot(running=False)
+    pendant = Pendant(node, PointStore(str(tmp_path / 'p.yaml')))
+    pendant.store.add(Point('target', SAMPLE))
+    for line in ('jog z 10', 'jog j1 5', 'goto target'):
+        pendant.dispatch(line)
+    assert node.cartesian == [] and node.joint_moves == []
+    assert 'robot resend' in capsys.readouterr().out
+
+
+def test_motion_in_the_simulation_is_not_held_up_by_robot_status(tmp_path):
+    node = FakeNode()
+    node.robot = FakeRobot(real=False)
+    Pendant(node, PointStore(str(tmp_path / 'p.yaml'))).dispatch('jog z 10')
+    assert len(node.cartesian) == 1
+
+
+def test_robot_resend(pendant):
+    pendant.dispatch('robot resend')
+    assert pendant.node.robot.calls == [('resend',)]

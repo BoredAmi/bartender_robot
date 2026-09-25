@@ -393,3 +393,15 @@ def test_the_page_records_through_the_same_commands_the_terminal_takes(bridge):
     for command in ("run('record '", "run('stop')", "run('save')",
                     "run('wait 1')"):
         assert command in PAGE
+
+
+def test_state_carries_the_robot_status(bridge):
+    robot = bridge.state()['robot']
+    assert robot['real'] is True
+    assert robot['freedrive'] is False
+
+
+def test_the_page_has_the_robot_controls():
+    for cmd in ("run('robot on')", "run('robot play')", "run('robot unlock')",
+                "'speed ' + v", "'freedrive '"):
+        assert cmd in PAGE, cmd
