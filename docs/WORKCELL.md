@@ -289,14 +289,17 @@ with `--file workcell`** so that its points go in
 the same joint names as the simulation, so a point taught in sim can be
 replayed on the real arm. Always replay it slowly the first time.
 
-### Teaching the bottles (whiskey, wodka, gin)
+### Teaching the bottles (whiskey, vodka, gin)
 
 ```bash
 ros2 run bartender_teach teach_gui --file workcell    # or: teach --file workcell
 ```
 
 The file starts with only `home` (arm straight up). Each bottle gets three
-points and one pipeline that picks it up:
+points and one pipeline that picks it up. **The pipeline must be called
+`grab_<bottle>`:** that name is how the API finds the bottles (see
+"Picking a bottle through the API" below). Point names are up to you;
+these are a suggestion:
 
 | Point | Where the arm is |
 |---|---|
@@ -304,35 +307,35 @@ points and one pipeline that picks it up:
 | `<bottle>_grasp` | Fingers around the bottle, just below its shoulder |
 | `<bottle>_lift` | The same, 50 mm higher |
 
-`<bottle>` is `whiskey`, `wodka` or `gin`. Stand the three bottles where
+`<bottle>` is `whiskey`, `vodka` or `gin`. Stand the three bottles where
 they will always stand, and mark the spots on the table: a taught grasp is
 only right while the bottle is back on its mark.
 
-For each bottle (whiskey shown; repeat with `wodka` and `gin`):
+For each bottle (whiskey shown; repeat with `vodka` and `gin`):
 
 ```
 teach[a]> speed 15
 teach[a]> goto home
-teach[a]> record pick_whiskey  whiskey from its spot
-teach[a] rec:pick_whiskey> open
+teach[a]> record grab_whiskey  whiskey from its spot
+teach[a] rec:grab_whiskey> open
     ... bring the gripper in front of the bottle, 100 mm away, at grasp
     height (jog, or freedrive on / move it by hand / freedrive off) ...
-teach[a] rec:pick_whiskey> save whiskey_pregrasp
-teach[a] rec:pick_whiskey> jog tz 50          # straight in, in small steps
-teach[a] rec:pick_whiskey> jog tz 50
-teach[a] rec:pick_whiskey> safety off         # only if the planner refuses the last few mm
-teach[a] rec:pick_whiskey> save whiskey_grasp
-teach[a] rec:pick_whiskey> close
-teach[a] rec:pick_whiskey> jog z 50
-teach[a] rec:pick_whiskey> save whiskey_lift
-teach[a] rec:pick_whiskey> goto home
-teach[a] rec:pick_whiskey> stop
+teach[a] rec:grab_whiskey> save whiskey_pregrasp
+teach[a] rec:grab_whiskey> jog tz 50          # straight in, in small steps
+teach[a] rec:grab_whiskey> jog tz 50
+teach[a] rec:grab_whiskey> safety off         # only if the planner refuses the last few mm
+teach[a] rec:grab_whiskey> save whiskey_grasp
+teach[a] rec:grab_whiskey> close
+teach[a] rec:grab_whiskey> jog z 50
+teach[a] rec:grab_whiskey> save whiskey_lift
+teach[a] rec:grab_whiskey> goto home
+teach[a] rec:grab_whiskey> stop
 teach[a]> safety on
 ```
 
-The recording gives `pick_whiskey`: open, go to the pre-grasp point, go to
-the grasp point, close, lift, go home. To check it, run `run pick_whiskey dry`
-(lists the steps, no motion), then `run pick_whiskey` at low speed. To put a
+The recording gives `grab_whiskey`: open, go to the pre-grasp point, go to
+the grasp point, close, lift, go home. To check it, run `run grab_whiskey dry`
+(lists the steps, no motion), then `run grab_whiskey` at low speed. To put a
 bottle back, visit the same points in reverse: `goto whiskey_lift`,
 `goto whiskey_grasp`, `open`, `goto whiskey_pregrasp`.
 
@@ -347,13 +350,81 @@ Things to know:
   fingers, so make sure the fingers are physically open before approaching,
   and do not expect `whiskey_lift` to take the bottle with it yet.
 - **Made a mistake?** Use `resave NAME` to overwrite a point, `pipeline drop`
-  to remove the last step, or `pipeline rm pick_whiskey` and record again.
+  to remove the last step, or `pipeline rm grab_whiskey` and record again.
 - The point file is rewritten on every save, and a rebuild does not touch
   it, because it lives in the source tree. Commit it once the three bottles
   are taught.
 
 Full reference:
 [`bartender_teach/README.md`](../ros2_ws/src/bartender_teach/README.md).
+
+### Picking a bottle through the API
+
+Full reference, for whoever writes the calling program: [WORKCELL_API.md](WORKCELL_API.md).
+
+Once a bottle has its `grab_<bottle>` pipeline, other programs can ask for
+it over HTTP. Start the API server with this cell's point file, next to a
+running `workcell_twin` (or `workcell_real`):
+
+```bash
+ros2 run bartender_api server --points workcell
+```
+
+```bash
+curl http://127.0.0.1:8090/bottles
+# {"bottles": [{"bottle": "whiskey", "pipeline": "grab_whiskey", "steps": 6}], "points_file": "..."}
+
+curl -X POST http://127.0.0.1:8090/pick \
+  -H 'Content-Type: application/json' -d '{"bottle": "whiskey"}'
+# {"ok": true, "bottle": "whiskey", "message": "  running grab_whiskey: ... finished grab_whiskey"}
+```
+
+- `/pick` runs `run grab_<bottle>` exactly as the pendant would, and answers
+  when the pipeline has finished or stopped. The HTTP status is 200 if every
+  step worked and 409 if not; `message` says which step stopped and why.
+- A bottle nobody has taught gets a 409 that lists the bottles that do
+  exist. **To add vodka or gin, teach `grab_vodka` / `grab_gin` on the
+  pendant.** The server re-reads the point file on every request, so there
+  is nothing to restart and no code to change.
+- One command at a time: a `/pick` while another move is running is
+  refused (`busy`), not queued. The browser pendant is a separate process
+  and is *not* locked out, so don't drive the arm from both at once.
+- The speed is whatever the UR speed slider is set to (`speed` on the
+  pendant).
+
+### Making a drink through the API
+
+A drink is one API call that runs a list of scripts, in order. The menu is
+[`bartender_teach/config/workcell_menu.yaml`](../ros2_ws/src/bartender_teach/config/workcell_menu.yaml):
+whiskey, gin and vodka, each with cola, sprite or fanta. Each drink runs
+three scripts per ingredient, which are yours to teach:
+
+| Script | Does |
+|---|---|
+| `grab_<x>` | Pick the bottle up from its spot (the same one `/pick` runs) |
+| `pour_<x>` | Pour it into the glass |
+| `return_<x>` | Put it back on its spot |
+
+`<x>` is `whiskey`, `gin`, `vodka`, `cola`, `sprite` or `fanta`. Only
+`grab_whiskey` exists so far, so every drink is "not ready" until its
+scripts are taught. The server reads the menu with `--points workcell`.
+
+```bash
+curl http://127.0.0.1:8090/drinks
+# each drink: "ready": true/false, and "missing_scripts" for what to teach next
+
+curl -X POST http://127.0.0.1:8090/make \
+  -H 'Content-Type: application/json' -d '{"drink": "whiskey_cola"}'
+```
+
+- **Nothing moves unless every script exists** and every point those
+  scripts use exists. A drink that isn't ready gets a 409 listing what is
+  missing.
+- **It stops at the first script that doesn't finish.** The answer then has
+  `"ok": false` and `"stopped_at": "script 4 of 6: grab_cola"`. Nothing puts
+  back a bottle that is still in the gripper.
+- **To change a drink or add one**, edit the menu file. The order and names
+  of scripts are entirely up to you; the next request picks up the change.
 
 ## Stopping, and recovering
 
