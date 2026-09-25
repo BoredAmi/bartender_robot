@@ -21,6 +21,20 @@ RUN apt-get update \
         ros-humble-ur-simulation-gz \
     && rm -rf /var/lib/apt/lists/*
 
+# Bottle labels: PaddleOCR reads them offline, Gemini is the fallback. The models
+# are fetched here so the server starts without network; the source check is off
+# for the same reason. numpy<2 keeps ROS Humble's compiled bindings (cv_bridge) loadable.
+ENV PADDLE_PDX_CACHE_HOME=/opt/models/paddlex \
+    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+RUN pip3 install --no-cache-dir "numpy<2" paddlepaddle paddleocr google-genai \
+    && python3 -c "from paddleocr import PaddleOCR; PaddleOCR( \
+        use_doc_orientation_classify=False, use_doc_unwarping=False, \
+        use_textline_orientation=False, enable_mkldnn=False)" \
+    && chmod -R a+rwX /opt/models/paddlex
+# ^ run_docker.sh runs as the host user, not the root that fetched the models.
+# google-genai pulls in anyio, whose pytest plugin crashes Humble's apt pytest (colcon test included).
+ENV PYTEST_ADDOPTS="-p no:anyio"
+
 # Interactive shells automatically pick up an already-built workspace.
 # The ROS image entrypoint sources /opt/ros/humble for every command.
 RUN printf '%s\n' \

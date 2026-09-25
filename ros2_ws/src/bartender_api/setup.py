@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/config', ['config/stand_camera.yaml']),
+        ('share/' + package_name + '/config', ['config/stand_camera.yaml', 'config/bottles.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,6 +21,12 @@ setup(
     extras_require={
         'test': [
             'pytest',
+        ],
+        # Optional: label OCR, and Gemini as its fallback.
+        'drink': [
+            'paddlepaddle',
+            'paddleocr',
+            'google-genai',
         ],
     },
     entry_points={

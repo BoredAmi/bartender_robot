@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(
     *([os.pardir] * 4), 'ros2_ws', 'src', 'bartender_open'))
 
 from bartender_api import world                             # noqa: E402
+from bartender_api.drink.label import Label                # noqa: E402
 from bartender_api.perception import (                      # noqa: E402
     CameraPose, Observation, unknown)
 from bartender_open import layout as L                       # noqa: E402
@@ -185,3 +186,22 @@ def test_unknown_mode_or_missing_observer_is_refused():
         except ValueError:
             continue
         raise AssertionError(f'{mode} with {observe} was accepted')
+
+
+def test_bottle_stations_carry_their_label_and_an_empty_one_none():
+    seen = []
+
+    def see_label(station, occupied):
+        seen.append((station, occupied))
+        return Label("Jack Daniel's", 'whiskey', 700, 1.0, 'inventory') if occupied else None
+
+    def observe(name):
+        return Observation('observed' if name == 'whiskey' else 'missing',
+                           name == 'whiskey', None, 0.1)
+    stations = _stations_by_id(_build(lambda name: None, observe, 'camera',
+                                      see_label))
+    assert stations['whiskey']['label']['brand'] == "Jack Daniel's"
+    assert 'label' not in stations['cola']
+    assert 'label' not in stations['glass']
+    assert ('cola', False) in seen
+    assert all(s != 'glass' for s, _ in seen)

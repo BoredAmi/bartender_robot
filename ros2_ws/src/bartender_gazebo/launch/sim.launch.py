@@ -172,6 +172,8 @@ def generate_launch_description():
             '@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/bartender/stand_camera/camera_info'
             '@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+            '/bartender/stand_camera/rgb'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
         ],
         output='screen',
     )
