@@ -114,6 +114,30 @@ is genuinely all `Pendant.dispatch()` produces (see the note on this under
 `{"ok": false, "message": "busy: a command is already running"}` with HTTP
 409 rather than queuing the request.
 
+**Pick a bottle.** `GET /bottles` lists what can be picked, and
+`POST /pick {"bottle": "whiskey"}` runs the `grab_whiskey` pipeline taught on
+the pendant, start to finish. A bottle is pickable exactly when the point
+file has a `grab_<bottle>` pipeline, so adding one is teaching it, not code.
+The answer is `{"ok": bool, "bottle": ..., "message": ...}`: 200 when the
+whole pipeline finished, 409 when it was refused or stopped partway. For
+the one-arm workcell, start the server with `--points workcell`; see
+[WORKCELL.md](WORKCELL.md#picking-a-bottle-through-the-api).
+
+```bash
+curl http://127.0.0.1:8090/bottles
+curl -X POST http://127.0.0.1:8090/pick \
+  -H 'Content-Type: application/json' -d '{"bottle": "whiskey"}'
+```
+
+**Make a drink.** `GET /drinks` lists the menu, and says for each drink
+whether all its scripts are taught. `POST /make {"drink": "whiskey_cola"}`
+runs that drink's scripts (pendant pipelines) in order as one command. It
+stops at the first one that does not finish and answers with `stopped_at`.
+The menu is a YAML file (`--menu`, which defaults to the `--points` name:
+`--points workcell` reads `workcell_menu.yaml`). A drink with untaught
+scripts or missing points is refused before anything moves. See
+[WORKCELL.md](WORKCELL.md#making-a-drink-through-the-api).
+
 **From another machine on the same LAN:** bind to this host's LAN address
 instead of localhost, e.g. `ros2 run bartender_api server --host
 192.168.1.155`, and use that address in place of `127.0.0.1` above. The

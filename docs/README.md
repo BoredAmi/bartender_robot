@@ -6,6 +6,7 @@ this robot.
 | | |
 |---|---|
 | [WORKCELL.md](WORKCELL.md) | **Running the real robot**: the one-arm workcell, connecting the UR5e over Ethernet, and moving it. |
+| [WORKCELL_API.md](WORKCELL_API.md) | **Workcell API**: picking bottles and making drinks over HTTP, for the programs that order them. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the system is put together, the frame problem, why reachability is asymmetric, and where to add a new bottle / skill / front end. **Read this first.** |
 | [CONTROL_API.md](CONTROL_API.md) | The proposed HTTP/JSON API for a VLM, planner or other non-ROS caller. **Proposal — not built yet.** |
 | [ROADMAP.md](ROADMAP.md) | What works, what is blocking autonomy, phases, and ideas. |
