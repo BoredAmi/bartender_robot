@@ -252,6 +252,38 @@
       <pose>0.10 0.40 0.9 0 0 0</pose>
     </include>
 
+    <!-- Simulated OAK-D depth on a stand; its pose is restated in bartender_api/config/stand_camera.yaml. -->
+    <model name="oak_d_stand">
+      <static>true</static>
+      <pose>0.75 0 1.35 0 0.493051 3.141593</pose>
+      <link name="link">
+        <sensor name="stand_depth" type="depth_camera">
+          <always_on>true</always_on>
+          <update_rate>5</update_rate>
+          <topic>/bartender/stand_camera/depth</topic>
+          <ignition_frame_id>stand_camera_optical_frame</ignition_frame_id>
+          <camera>
+            <camera_info_topic>/bartender/stand_camera/camera_info</camera_info_topic>
+            <horizontal_fov>1.2566</horizontal_fov>
+            <image>
+              <width>640</width>
+              <height>400</height>
+              <format>R_FLOAT32</format>
+            </image>
+            <clip>
+              <near>0.2</near>
+              <far>5.0</far>
+            </clip>
+            <noise>
+              <type>gaussian</type>
+              <mean>0.0</mean>
+              <stddev>0.004</stddev>
+            </noise>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+
     <!-- NO PEDESTAL. Arm B stood on one, beside the counter at (0.15, 0.62),
          for as long as the counter was too small to carry both arms. It now
          bolts to the bar top the way arm A does, so the pedestal model is
