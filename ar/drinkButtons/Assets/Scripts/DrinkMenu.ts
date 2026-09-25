@@ -4,13 +4,13 @@ import TrackedHand from "SpectaclesInteractionKit.lspkg/Providers/HandInputData/
 import WorldCameraFinderProvider from "SpectaclesInteractionKit.lspkg/Providers/CameraProvider/WorldCameraFinderProvider";
 import { HoldDetector, isThumbsUp } from "./thumbsUp";
 
-const DRINKS = ["beer", "cyder", "jagermeister"] as const;
+const DRINKS = ["beer", "cyder", "jagermeister", "whiskey", "cola"] as const;
 type Drink = (typeof DRINKS)[number];
 
 @component
 export class DrinkMenu extends BaseScriptComponent {
   @input
-  @hint("Beer, Cyder, Jagermeister -- in that order; each needs a collider")
+  @hint("Beer, Cyder, Jagermeister, Whiskey, Cola -- in that order; each needs a collider")
   buttons!: SceneObject[];
 
   @input
@@ -130,7 +130,7 @@ export class DrinkMenu extends BaseScriptComponent {
   }
 }
 
-const label = (d: Drink) => ({ beer: "Beer", cyder: "Cyder", jagermeister: "Jagermeister" })[d];
+const label = (d: Drink) => ({ beer: "Beer", cyder: "Cyder", jagermeister: "Jagermeister", whiskey: "Whiskey", cola: "Cola" })[d];
 
 const joints = (h: TrackedHand) => ({
   wrist: h.wrist.position,

@@ -1,7 +1,9 @@
 # Drink menu lens (Spectacles)
 
-Three floating buttons -- Beer, Cyder, Jagermeister. Point at one (hand ray hover arms it), hold a
-thumbs-up for 0.4 s to order. Pinch does not order. The order currently only logs `ORDER <drink>`;
+Five buttons -- Beer, Cyder, Jagermeister, Whiskey, Cola. The menu is hidden until the wearer taps
+their palm with the other hand's finger; it then opens in front of them. Point at a drink (hand ray
+hover arms it), hold a thumbs-up for 0.4 s to order; the menu closes after the order. Pinch does not
+order. The order currently only logs `ORDER <drink>`;
 `DrinkMenu.order()` is where the robot call goes.
 
 - `Assets/Scripts/thumbsUp.ts` -- pure thumbs-up classifier + hold timer (no Lens Studio imports)
@@ -13,10 +15,12 @@ Needs SpectaclesInteractionKit installed and the SIK prefab in the scene.
 ## Testing
 
 1. **Logic** (no Lens Studio): `node tests/thumbsUp.test.ts` (Node >= 23).
-2. **Lens Studio preview**: tick `debugConfirmOnPinch` on DrinkMenu. Mouse over a button -> it grows
+2. **Lens Studio preview**: click once to open the menu (palm taps are not simulated), tick
+   `debugConfirmOnPinch` on DrinkMenu. Mouse over a button -> it grows
    and the status says "Beer -- thumbs up to order"; click -> log `ORDER beer`. Untick before shipping.
 3. **On device** (Preview on Spectacles, watch Logger):
-   - each drink: hover, then thumbs up -> one `ORDER <drink>`; hold longer -> still one
+   - palm tap (either hand) -> menu opens in front of you; no order is armed
+   - each drink: hover, then thumbs up -> one `ORDER <drink>`, menu closes; hold longer -> still one
    - pinch on a button -> no order
    - fist, open hand, pointing, thumbs down -> no order
    - thumbs up before hovering anything -> no order

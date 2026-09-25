@@ -29,6 +29,7 @@
   PackagePolicy: CanBeUnpacked
   ScriptInputsHidden:
     buttons: false
+    closeDelay: false
     curlRatio: false
     debugConfirmOnPinch: false
     holdSeconds: false
@@ -51,6 +52,7 @@
       thumbUpMin: 0.300000
       holdSeconds: 0.400000
       spawnDistance: !<float> 80.000000
+      closeDelay: 1.500000
       debugConfirmOnPinch: false
   ScriptTypes:
     -
@@ -62,4 +64,5 @@
     - '// @input float thumbUpMin = 0.3 {"hint":"Thumb tip must rise this fraction of hand size above the thumb knuckle"}'
     - // @input float holdSeconds = 0.4
     - '// @input float spawnDistance = 80 {"hint":"How far in front of the wearer the menu appears, cm"}'
+    - '// @input float closeDelay = 1.5 {"hint":"Seconds the order confirmation stays up before the menu hides"}'
     - '// @input bool debugConfirmOnPinch {"hint":"Editor preview only: thumbs-up cannot be simulated, so a click confirms"}'
