@@ -79,9 +79,9 @@ def test_installed_oak_d_observes_all_bottles_in_place():
         for name, profile in perception.PROFILES.items():
             result = perception.observe(frame, calibration, profile,
                                         L.STATIONS[name])
-            assert result['observation'] == 'observed', (name, result)
-            assert result['occupied'] is True
-            assert result['in_place'] is True
+            assert result.observation == 'observed', (name, result)
+            assert result.occupied is True
+            assert result.in_place is True
     finally:
         executor.shutdown()
         node.destroy_node()

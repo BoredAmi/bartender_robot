@@ -182,7 +182,7 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
         def do_GET(self):
             path = self.path.split('?')[0].rstrip('/') or '/'
             if path == '/world':
-                self._send(200, world.build(pose_cache.get, observe, mode))
+                self._send(200, world.build(pose_cache.get, observe, mode).to_json())
             elif path == '/state':
                 self._send(200, state_view.build(teach_node))
             else:

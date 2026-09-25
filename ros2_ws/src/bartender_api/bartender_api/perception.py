@@ -1,5 +1,6 @@
 """Classify each bottle as observed, missing or unknown from stand-camera depth."""
 import math
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
@@ -152,14 +153,39 @@ def fit_centre(points_xy, profile, towards_camera):
     return centre, rms
 
 
+@dataclass
+class CameraPose:
+    """Bottle centre fitted from depth, on the counter top, in world frame."""
+    xyz: list
+    confidence: float
+    fit_rms_mm: float
+    source: str = 'camera'
+
+
+@dataclass
+class Observation:
+    """One bottle station as the stand camera saw it.
+
+    /world merges these fields into the station. `occupied` and `in_place`
+    are None when `observation` is 'unknown': don't know, never empty.
+    """
+    observation: str
+    occupied: bool | None
+    reason: str | None
+    frame_age_s: float | None
+    valid_px: int = 0
+    foreground_px: int = 0
+    confidence: float = 0.0
+    in_place: bool | None = None
+    offset_mm: float | None = None
+    pose: CameraPose | None = None
+
+
 def unknown(reason, frame=None, valid_px=0, foreground_px=0):
-    return {
-        'observation': 'unknown', 'occupied': None, 'in_place': None,
-        'offset_mm': None, 'pose': None, 'reason': reason,
-        'frame_age_s': None if frame is None else round(frame.age_s, 3),
-        'valid_px': valid_px, 'foreground_px': foreground_px,
-        'confidence': 0.0,
-    }
+    return Observation(
+        'unknown', None, reason,
+        None if frame is None else round(frame.age_s, 3),
+        valid_px, foreground_px)
 
 
 def observe(frame, calib, profile, expected_xy):
@@ -222,13 +248,10 @@ def observe(frame, calib, profile, expected_xy):
                 n_valid_crossing >= MISSING_MIN_VALID_FRACTION * n_crossing and \
                 see_through >= MISSING_MIN_SEE_THROUGH_FRACTION * n_valid_crossing and \
                 occluded <= MISSING_MAX_OCCLUDED_FRACTION * n_valid_crossing:
-            return {
-                'observation': 'missing', 'occupied': False,
-                'in_place': False, 'offset_mm': None, 'pose': None,
-                'reason': 'saw through the bottle volume',
-                'frame_age_s': round(frame.age_s, 3), 'valid_px': n_valid,
-                'foreground_px': n_fg, 'confidence': 1.0,
-            }
+            return Observation(
+                'missing', False, 'saw through the bottle volume',
+                round(frame.age_s, 3), n_valid, n_fg, confidence=1.0,
+                in_place=False)
         if n_valid_crossing < MISSING_MIN_VALID_FRACTION * n_crossing:
             reason = 'too few valid depth pixels'
         elif occluded > MISSING_MAX_OCCLUDED_FRACTION * n_valid_crossing:
@@ -245,15 +268,11 @@ def observe(frame, calib, profile, expected_xy):
     confidence = min(1.0, n_fg / expected_px) * \
         max(0.0, 1.0 - rms * 1000.0 / TOL_MM)
     confidence = round(confidence, 3)
-    return {
-        'observation': 'observed', 'occupied': True,
-        'in_place': offset_mm <= TOL_MM, 'offset_mm': round(offset_mm, 1),
-        'pose': {
-            'xyz': [round(float(centre[0]), 4), round(float(centre[1]), 4),
-                    L.COUNTER_Z],
-            'source': 'camera', 'confidence': confidence,
-            'fit_rms_mm': round(rms * 1000.0, 1),
-        },
-        'reason': None, 'frame_age_s': round(frame.age_s, 3),
-        'valid_px': n_valid, 'foreground_px': n_fg, 'confidence': confidence,
-    }
+    return Observation(
+        'observed', True, None, round(frame.age_s, 3), n_valid, n_fg,
+        confidence, in_place=offset_mm <= TOL_MM,
+        offset_mm=round(offset_mm, 1),
+        pose=CameraPose(
+            [round(float(centre[0]), 4), round(float(centre[1]), 4),
+             L.COUNTER_Z],
+            confidence, round(rms * 1000.0, 1)))

@@ -128,12 +128,12 @@ def test_projection_and_back_projection_round_trip_under_rotated_camera():
 def test_known_circle_and_square_profiles_are_observed_at_their_stations():
     for name in ('whiskey', 'cola', 'beer'):
         result = _observe(name)
-        assert result['observation'] == 'observed', (name, result)
-        assert result['occupied'] is True
-        assert result['in_place'] is True
-        assert result['offset_mm'] <= 2.0
-        assert result['pose']['source'] == 'camera'
-        assert result['valid_px'] >= result['foreground_px'] > 0
+        assert result.observation == 'observed', (name, result)
+        assert result.occupied is True
+        assert result.in_place is True
+        assert result.offset_mm <= 2.0
+        assert result.pose.source == 'camera'
+        assert result.valid_px >= result.foreground_px > 0
 
 
 def test_32fc1_and_16uc1_decode_to_the_same_metres_and_invalid_pixels():
@@ -158,9 +158,9 @@ def test_stale_or_wrong_frame_is_unknown_not_ground_truth():
         _frame(depth, frame_id='another_optical_frame'), CALIB,
         perception.PROFILES['cola'], L.STATIONS['cola'])
     for result in (stale, wrong_frame):
-        assert result['observation'] == 'unknown'
-        assert result['occupied'] is None
-        assert result['in_place'] is None
+        assert result.observation == 'unknown'
+        assert result.occupied is None
+        assert result.in_place is None
 
 
 def test_empty_visible_station_is_missing_but_depth_holes_are_unknown():
@@ -168,10 +168,10 @@ def test_empty_visible_station_is_missing_but_depth_holes_are_unknown():
     missing = perception.observe(_frame(_render()), CALIB, profile, expected)
     holes = perception.observe(
         _frame(np.full((HEIGHT, WIDTH), np.nan)), CALIB, profile, expected)
-    assert missing['observation'] == 'missing', missing
-    assert missing['occupied'] is False
-    assert holes['observation'] == 'unknown'
-    assert holes['occupied'] is None
+    assert missing.observation == 'missing', missing
+    assert missing.occupied is False
+    assert holes.observation == 'unknown'
+    assert holes.occupied is None
 
 
 def test_opaque_blocker_in_front_of_the_station_is_unknown_not_missing():
@@ -183,9 +183,9 @@ def test_opaque_blocker_in_front_of_the_station_is_unknown_not_missing():
                   [(blocker, in_front), (profile, expected)]):
         result = perception.observe(_frame(_render(scene)), CALIB, profile,
                                     expected)
-        assert result['observation'] == 'unknown', result
-        assert result['occupied'] is None
-        assert result['reason'] == 'something is in front of it'
+        assert result.observation == 'unknown', result
+        assert result.occupied is None
+        assert result.reason == 'something is in front of it'
 
 
 def test_adjacent_bottle_does_not_become_the_target_bottle():
@@ -194,27 +194,27 @@ def test_adjacent_bottle_does_not_become_the_target_bottle():
     depth = _render([(perception.PROFILES['cola'], adjacent)])
     result = perception.observe(_frame(depth), CALIB,
                                 perception.PROFILES['cola'], expected)
-    assert result['observation'] == 'missing', result
+    assert result.observation == 'missing', result
 
 
 def test_dropout_lowers_confidence_then_becomes_unknown_not_missing():
     clean = _observe('beer')
     noisy = _observe('beer', dropout=0.30, seed=7)
     sparse = _observe('beer', dropout=0.90, seed=7)
-    assert noisy['observation'] == 'observed', noisy
-    assert noisy['confidence'] < clean['confidence']
-    assert sparse['observation'] == 'unknown', sparse
-    assert sparse['occupied'] is None
+    assert noisy.observation == 'observed', noisy
+    assert noisy.confidence < clean.confidence
+    assert sparse.observation == 'unknown', sparse
+    assert sparse.occupied is None
 
 
 def test_tolerance_boundary_sets_in_place_from_the_measured_offset():
     inside = _observe('cola', offset=(0.010, 0.0))
     outside = _observe('cola', offset=(0.020, 0.0))
-    assert inside['observation'] == outside['observation'] == 'observed'
-    assert inside['offset_mm'] < perception.TOL_MM
-    assert inside['in_place'] is True
-    assert outside['offset_mm'] > perception.TOL_MM
-    assert outside['in_place'] is False
+    assert inside.observation == outside.observation == 'observed'
+    assert inside.offset_mm < perception.TOL_MM
+    assert inside.in_place is True
+    assert outside.offset_mm > perception.TOL_MM
+    assert outside.in_place is False
 
 
 def test_sim_yaml_matches_the_sdf_camera_pose_and_optical_rotation():

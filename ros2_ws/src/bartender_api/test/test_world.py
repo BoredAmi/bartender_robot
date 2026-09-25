@@ -14,7 +14,13 @@ sys.path.insert(0, os.path.join(
     *([os.pardir] * 4), 'ros2_ws', 'src', 'bartender_open'))
 
 from bartender_api import world                             # noqa: E402
+from bartender_api.perception import (                      # noqa: E402
+    CameraPose, Observation, unknown)
 from bartender_open import layout as L                       # noqa: E402
+
+
+def _build(*args):
+    return world.build(*args).to_json()
 
 
 def _stations_by_id(doc):
@@ -22,7 +28,7 @@ def _stations_by_id(doc):
 
 
 def test_every_named_station_appears_exactly_once():
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     stations = _stations_by_id(doc)
     for name in L.STATIONS:
         assert name in stations
@@ -32,7 +38,7 @@ def test_every_named_station_appears_exactly_once():
 def test_occupied_follows_the_live_pose_not_a_guess():
     """A station with no live pose is unoccupied; one with a pose is."""
     live = {'beer_bottle': (0.08, 0.0, 0.9)}
-    doc = world.build(lambda name: live.get(name))
+    doc = _build(lambda name: live.get(name))
     stations = _stations_by_id(doc)
     assert stations['beer']['occupied'] is True
     assert stations['beer']['pose']['xyz'] == [0.08, 0.0, 0.9]
@@ -67,8 +73,8 @@ def test_pose_carries_source_and_confidence():
     it the field already exists, and callers written against it do not
     change." A pose missing either field breaks that promise silently.
     """
-    doc = world.build(lambda name: (0.0, 0.0, 0.9) if name == 'beer_bottle'
-                      else None)
+    doc = _build(lambda name: (0.0, 0.0, 0.9) if name == 'beer_bottle'
+                 else None)
     beer = _stations_by_id(doc)['beer']
     assert beer['pose']['source'] == 'sim_ground_truth'
     assert beer['pose']['confidence'] == 1.0
@@ -76,7 +82,7 @@ def test_pose_carries_source_and_confidence():
 
 def test_reachable_by_is_computed_not_hand_written():
     """Bottle stations must equal layout.servicing_arms(), never a stale copy."""
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     stations = _stations_by_id(doc)
     for name in ('whiskey', 'cola', 'beer'):
         xy = L.STATIONS[name]
@@ -90,7 +96,7 @@ def test_the_glass_is_reachable_even_though_nothing_grips_it():
     and the real pour skill reaches it every day. See reach.py and
     feasibility.py's identical fix for /can.
     """
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     glass = _stations_by_id(doc)['glass']
     assert glass['reachable_by'] == ['a']
     opener = _stations_by_id(doc)['opener']
@@ -99,7 +105,7 @@ def test_the_glass_is_reachable_even_though_nothing_grips_it():
 
 def test_empty_slots_are_stations_too():
     """Free slots matter too -- "where could I put this down" needs them."""
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     empty = [s for s in doc['stations'] if s['kind'] == 'empty_slot']
     assert len(empty) == len(L.free_slots())
     for s in empty:
@@ -108,7 +114,7 @@ def test_empty_slots_are_stations_too():
 
 
 def test_empty_slot_ids_match_the_lines_own_index_scheme():
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     empty_ids = {s['id'] for s in doc['stations'] if s['kind'] == 'empty_slot'}
     expected = {f'slot_{round(y / L.SLOT_PITCH):+d}'
                 for y, name in L.BOTTLE_SLOTS if name is None}
@@ -116,14 +122,14 @@ def test_empty_slot_ids_match_the_lines_own_index_scheme():
 
 
 def test_arms_report_their_real_origins():
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     by_id = {a['id']: a for a in doc['arms']}
     assert by_id['a']['origin'] == list(L.ARM_A_ORIGIN)
     assert by_id['b']['origin'] == list(L.ARM_B_ORIGIN)
 
 
 def test_counter_matches_layout():
-    doc = world.build(lambda name: None)
+    doc = _build(lambda name: None)
     assert doc['counter']['top_z'] == L.COUNTER_Z
     assert doc['counter']['size'] == list(L.COUNTER_SIZE)
 
@@ -139,14 +145,14 @@ def _camera_sees(xy_by_station):
     def observe(station):
         xy = xy_by_station.get(station)
         if xy is None:
-            return {'observation': 'unknown', 'occupied': None, 'pose': None}
-        return {'observation': 'observed', 'occupied': True,
-                'pose': {'xyz': [xy[0], xy[1], 0.9], 'source': 'camera'}}
+            return unknown('not in view')
+        return Observation('observed', True, None, 0.0,
+                           pose=CameraPose([xy[0], xy[1], 0.9], 1.0, 0.0))
     return observe
 
 
 def test_camera_mode_never_falls_back_to_ground_truth():
-    doc = world.build(GROUND_TRUTH.get, _camera_sees({}), 'camera')
+    doc = _build(GROUND_TRUTH.get, _camera_sees({}), 'camera')
     stations = _stations_by_id(doc)
     assert doc['perception'] == 'camera'
     for name in ('whiskey', 'cola', 'beer', 'glass', 'opener'):
@@ -156,15 +162,16 @@ def test_camera_mode_never_falls_back_to_ground_truth():
 
 def test_camera_mode_takes_bottle_poses_from_the_camera_only():
     observe = _camera_sees({'cola': (0.083, -0.15)})
-    stations = _stations_by_id(world.build(GROUND_TRUTH.get, observe, 'camera'))
+    stations = _stations_by_id(_build(GROUND_TRUTH.get, observe, 'camera'))
     assert stations['cola']['pose'] == {'xyz': [0.083, -0.15, 0.9],
-                                        'source': 'camera'}
+                                        'source': 'camera', 'confidence': 1.0,
+                                        'fit_rms_mm': 0.0}
     assert stations['glass']['observation'] == 'unknown'
 
 
 def test_compare_mode_reports_the_error_against_ground_truth():
     observe = _camera_sees({'cola': (0.083, -0.146)})
-    stations = _stations_by_id(world.build(GROUND_TRUTH.get, observe, 'compare'))
+    stations = _stations_by_id(_build(GROUND_TRUTH.get, observe, 'compare'))
     assert stations['cola']['ground_truth_xy'] == [0.08, -0.15]
     assert stations['cola']['error_mm'] == 5.0
     assert stations['whiskey']['error_mm'] is None

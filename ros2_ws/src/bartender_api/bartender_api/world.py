@@ -5,8 +5,11 @@ whatever is actually subscribed to /world/bar_world/dynamic_pose/info (see
 server.py) -- the same ground-truth topic open_action_server reads. See
 docs/CONTROL_API.md, "1. World".
 """
+from dataclasses import asdict, dataclass, fields
+
 from bartender_open import layout as L
 
+from .perception import Observation, unknown
 from .reach import arms_within_reach
 
 # A station's world (x, y) is decided once, in layout.py; its Gazebo MODEL
@@ -23,11 +26,79 @@ STATION_MODEL = {
     'opener': 'bottle_opener',
 }
 
+
+@dataclass
+class Arm:
+    """An arm's base pose and what it can do, as /world reports it."""
+    id: str
+    origin: list
+    yaw: float
+    serves_world_y: list
+    skills: list
+
+
+@dataclass
+class Counter:
+    """The bar counter box; `top_z` is the surface bottles stand on."""
+    centre: list
+    size: list
+    top_z: float
+
+
+@dataclass
+class GroundTruthPose:
+    """A pose read from the simulator, so exact by definition."""
+    xyz: list
+    source: str = 'sim_ground_truth'
+    confidence: float = 1.0
+
+
+@dataclass
+class GroundTruth:
+    """Station occupancy from the sim pose topic; no pose means empty."""
+    occupied: bool
+    pose: GroundTruthPose | None
+
+
+@dataclass
+class Comparison(Observation):
+    """A camera observation beside the sim truth, for measuring error_mm."""
+    ground_truth_xy: list | None = None
+    error_mm: float | None = None
+
+
+@dataclass
+class Station:
+    """A place on the bar; `live` says what is there and how that is known."""
+    id: str
+    kind: str
+    xy: list
+    reachable_by: list
+    live: GroundTruth | Observation
+
+
+@dataclass
+class World:
+    """The GET /world document."""
+    frame: str
+    perception: str
+    counter: Counter
+    arms: list
+    stations: list
+
+    def to_json(self):
+        """Serialise, flattening each station's `live` beside its geometry."""
+        doc = asdict(self)
+        for station in doc['stations']:
+            station.update(station.pop('live'))
+        return doc
+
+
 ARMS = (
-    {'id': 'a', 'origin': list(L.ARM_A_ORIGIN), 'yaw': L.ARM_A_YAW,
-     'serves_world_y': list(L.APPROACH_WINDOW), 'skills': ['pour', 'hold']},
-    {'id': 'b', 'origin': list(L.ARM_B_ORIGIN), 'yaw': L.ARM_B_YAW,
-     'serves_world_y': list(L.APPROACH_WINDOW), 'skills': ['open', 'hold']},
+    Arm('a', list(L.ARM_A_ORIGIN), L.ARM_A_YAW, list(L.APPROACH_WINDOW),
+        ['pour', 'hold']),
+    Arm('b', list(L.ARM_B_ORIGIN), L.ARM_B_YAW, list(L.APPROACH_WINDOW),
+        ['open', 'hold']),
 )
 
 
@@ -68,37 +139,33 @@ def _slot_id(xy):
 
 MODES = ('ground_truth', 'camera', 'compare')
 
-# Unobserved stations are unknown, never "unoccupied", so camera mode has no silent fallback.
-NOT_OBSERVED = {'observation': 'unknown', 'occupied': None, 'pose': None,
-                'reason': 'not observed by any camera'}
-
 
 def _ground_truth(live):
-    return {
-        'occupied': live is not None,
-        'pose': None if live is None else {
-            'xyz': list(live),
-            'source': 'sim_ground_truth',
-            'confidence': 1.0,
-        },
-    }
+    return GroundTruth(live is not None,
+                       None if live is None else GroundTruthPose(list(live)))
 
 
-def _live_fields(name, kind, live, observe, mode):
+def _compare(seen, live):
+    result = Comparison(
+        **{f.name: getattr(seen, f.name) for f in fields(seen)})
+    if live is not None:
+        result.ground_truth_xy = list(live[:2])
+        if seen.pose is not None:
+            cam = seen.pose.xyz
+            result.error_mm = round(
+                1000.0 * ((cam[0] - live[0]) ** 2
+                          + (cam[1] - live[1]) ** 2) ** 0.5, 1)
+    return result
+
+
+def _live(name, kind, live, observe, mode):
     if mode == 'ground_truth' or (mode == 'compare' and kind != 'bottle'):
         return _ground_truth(live)
     if kind != 'bottle':
-        return dict(NOT_OBSERVED)
-    fields = observe(name)
-    if mode == 'compare':
-        fields['ground_truth_xy'] = None if live is None else list(live[:2])
-        fields['error_mm'] = None
-        if live is not None and fields['pose'] is not None:
-            cam = fields['pose']['xyz']
-            fields['error_mm'] = round(
-                1000.0 * ((cam[0] - live[0]) ** 2
-                          + (cam[1] - live[1]) ** 2) ** 0.5, 1)
-    return fields
+        # Unknown, never "unoccupied", so camera mode has no silent fallback.
+        return unknown('not observed by any camera')
+    seen = observe(name)
+    return _compare(seen, live) if mode == 'compare' else seen
 
 
 def build(pose_lookup, observe=None, mode='ground_truth'):
@@ -112,30 +179,13 @@ def build(pose_lookup, observe=None, mode='ground_truth'):
         xy = L.STATIONS[name]
         kind = _kind_of(name)
         live = pose_lookup(STATION_MODEL.get(name, name))
-        stations.append({
-            'id': name,
-            'kind': kind,
-            'xy': list(xy),
-            'reachable_by': _reachable_by(kind, xy),
-            **_live_fields(name, kind, live, observe, mode),
-        })
+        stations.append(Station(name, kind, list(xy), _reachable_by(kind, xy),
+                                _live(name, kind, live, observe, mode)))
     for xy in L.free_slots():
-        stations.append({
-            'id': _slot_id(xy),
-            'kind': 'empty_slot',
-            'xy': list(xy),
-            'reachable_by': L.servicing_arms(xy),
-            'occupied': False,
-            'pose': None,
-        })
-    return {
-        'frame': 'world',
-        'perception': mode,
-        'counter': {
-            'centre': list(L.COUNTER_CENTRE),
-            'size': list(L.COUNTER_SIZE),
-            'top_z': L.COUNTER_Z,
-        },
-        'arms': [dict(a) for a in ARMS],
-        'stations': stations,
-    }
+        stations.append(Station(_slot_id(xy), 'empty_slot', list(xy),
+                                L.servicing_arms(xy),
+                                GroundTruth(False, None)))
+    return World('world', mode,
+                 Counter(list(L.COUNTER_CENTRE), list(L.COUNTER_SIZE),
+                         L.COUNTER_Z),
+                 list(ARMS), stations)
