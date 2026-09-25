@@ -1,0 +1,65 @@
+- !<AssetImportMetadata/55ce7e34-035f-4ad6-bc25-4ac6191575e3>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> 9055a57f-e673-48fd-abe5-f7661787349a
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> 9055a57f-e673-48fd-abe5-f7661787349a
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> 18823d62-3ccc-4381-9824-879630fd0321
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/18823d62-3ccc-4381-9824-879630fd0321>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  VersionPrerelease: ""
+  UpdateOrder: 0
+  ComponentUid: 78ad01a9-8633-410a-b125-b7fd1571be2e
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    buttons: false
+    curlRatio: false
+    debugConfirmOnPinch: false
+    holdSeconds: false
+    spawnDistance: false
+    status: false
+    thumbUpMin: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - buttons: !<reference.SceneObject[]>
+        []
+      status: !<reference.Text> 00000000-0000-0000-0000-000000000000
+      curlRatio: 1.400000
+      thumbUpMin: 0.300000
+      holdSeconds: 0.400000
+      spawnDistance: !<float> 80.000000
+      debugConfirmOnPinch: false
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - '// @input SceneObject[] buttons {"hint":"Beer, Cyder, Jagermeister -- in that order; each needs a collider"}'
+    - // @input Component.Text status
+    - '// @input float curlRatio = 1.4 {"hint":"Finger counts as curled when tip-to-wrist < this x knuckle-to-wrist"}'
+    - '// @input float thumbUpMin = 0.3 {"hint":"Thumb tip must rise this fraction of hand size above the thumb knuckle"}'
+    - // @input float holdSeconds = 0.4
+    - '// @input float spawnDistance = 80 {"hint":"How far in front of the wearer the menu appears, cm"}'
+    - '// @input bool debugConfirmOnPinch {"hint":"Editor preview only: thumbs-up cannot be simulated, so a click confirms"}'
