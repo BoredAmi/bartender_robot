@@ -129,7 +129,7 @@ def launch_setup(context):
         # with the pendant's speed slider (and in reduced mode), so a move
         # at 15% takes ~7x its planned time. With monitoring on, MoveIt
         # cancels it after 1.2x, the arm stops dead, the retry is cancelled
-        # the same way, and the goto fails with -6 (CONTROL_FAILED). The
+        # the same way, and the goto fails with -6 (TIMED_OUT). The
         # controller's own goal tolerances still catch a move that fails.
         # ur_moveit_config turns it off for the same reason.
         'trajectory_execution.execution_duration_monitoring': ParameterValue(

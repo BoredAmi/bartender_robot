@@ -23,21 +23,38 @@ Pendant command (real work, not done here) or calling TeachNode's
 move_to_joints/move_cartesian directly and losing every bound dispatch
 provides for free. "Simple movement for now" is goto, jog, and the
 gripper -- the three things Pendant already does safely.
+
+PICK is the one exception to "taught points only, one move at a time", and
+it is still taught: `pick(bottle)` replays the grab_<bottle> pipeline that
+someone recorded on the pendant (`run grab_<bottle>`), nothing more. Which
+bottles exist is whatever grab_* pipelines the point file has, so adding a
+bottle is teaching it, not changing this code.
+
+MAKE is the same thing one level up: a drink on the menu (menu.py) is a
+list of those taught scripts, run in order as one command, stopping at the
+first that does not finish.
 """
 import contextlib
 import io
 import threading
 
-from bartender_teach.point_store import PointStoreError
+from bartender_teach.point_store import PointStore, PointStoreError
 from bartender_teach.teach_points import (
     ARMS, GRIPPER_OPEN_POS, GRIPPER_UPPER_LIMIT, MAX_JOG_DEG, MAX_JOG_MM,
     Pendant,
 )
 
+from . import menu
+
 # j1..j6 are handled separately (any of the arm's six joints); these are the
 # rest of what Pendant.cmd_jog recognises -- see AXES and cmd_jog itself.
 _LINEAR_AXES = {'x', 'y', 'z', 'tx', 'ty', 'tz'}
 _ROTATION_AXES = {'rx', 'ry', 'rz'}
+
+# A bottle is pickable when the point file has a pipeline called
+# grab_<bottle>, taught on the pendant with `record grab_<bottle>`. Nothing
+# else lists the bottles: teaching grab_gin is what makes `gin` a choice.
+GRAB_PREFIX = 'grab_'
 
 
 def _is_joint_axis(axis):
@@ -92,9 +109,10 @@ class MovementBridge:
     between the browser and terminal pendants.
     """
 
-    def __init__(self, node, store):
+    def __init__(self, node, store, menu_path=None):
         self.node = node
         self.pendant = Pendant(node, store)
+        self.menu_path = menu_path
         self._lock = threading.Lock()
 
     def _run(self, arm, line):
@@ -103,22 +121,169 @@ class MovementBridge:
         if not self._lock.acquire(blocking=False):
             return _refuse('busy: a command is already running')
         try:
+            text = self._dispatch(f'arm {arm}', line)
+        finally:
+            self._lock.release()
+        if isinstance(text, dict):
+            return text
+        return {'ok': _classify(text), 'message': text.strip()}
+
+    def _dispatch(self, *lines):
+        """Run pendant lines with the lock held; their output, or a refusal."""
+        try:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                self.pendant.dispatch(f'arm {arm}')
-                self.pendant.dispatch(line)
-            text = buf.getvalue()
+                for line in lines:
+                    self.pendant.dispatch(line)
+            return buf.getvalue()
         except Exception as exc:                            # noqa: BLE001
             # dispatch() already swallows the failures it knows about;
             # anything reaching here is a bug and must not take the whole
             # server down with it.
             self.node.get_logger().error(
-                f'movement command {line!r} raised: {exc}')
+                f'movement command {lines[-1]!r} raised: {exc}')
             return {'ok': False,
                     'message': f'unexpected error: {type(exc).__name__}: {exc}'}
+
+    def _reload(self):
+        """Re-read the point file, so bottles taught since startup show up.
+
+        The pendant that teaches them is another process writing the same
+        file; without this a new grab_gin would need a server restart.
+        Returns None, or why the file could not be read (the old contents
+        are kept then).
+        """
+        try:
+            self.pendant.store = PointStore.load(self.pendant.store.path)
+        except PointStoreError as exc:
+            return str(exc)
+        return None
+
+    def bottles(self):
+        """Return the pickable bottles: one per grab_<bottle> pipeline."""
+        with self._lock:
+            why = self._reload()
+            pipelines = self.pendant.store.pipelines
+        found = [{'bottle': name[len(GRAB_PREFIX):], 'pipeline': name,
+                  'steps': len(pipelines[name])}
+                 for name in sorted(pipelines)
+                 if name.startswith(GRAB_PREFIX) and len(name) > len(GRAB_PREFIX)]
+        out = {'bottles': found, 'points_file': self.pendant.store.path}
+        if why:
+            out['warning'] = f'point file not re-read: {why}'
+        return out
+
+    def pick(self, bottle):
+        """Run the grab_<bottle> pipeline, start to finish."""
+        if not isinstance(bottle, str) or not bottle.strip():
+            return _refuse('pick needs a bottle name')
+        bottle = bottle.strip().lower()
+        if not self._lock.acquire(blocking=False):
+            return _refuse('busy: a command is already running')
+        try:
+            why = self._reload()
+            if why:
+                return _refuse(f'cannot read the point file: {why}')
+            name = GRAB_PREFIX + bottle
+            try:
+                pipeline = self.pendant.store.pipelines[name]
+            except KeyError:
+                known = sorted(n[len(GRAB_PREFIX):]
+                               for n in self.pendant.store.pipelines
+                               if n.startswith(GRAB_PREFIX))
+                return _refuse(
+                    f'no bottle {bottle!r} to pick: there is no {name} '
+                    f'pipeline. Known: {", ".join(known) or "none yet"}. '
+                    f'Teach one on the pendant with `record {name}`.')
+            missing = pipeline.missing_points(self.pendant.store)
+            if missing:
+                return _refuse(f'{name} names points that do not exist: '
+                               f'{", ".join(missing)}')
+            result = self._run_scripts([name])
         finally:
             self._lock.release()
-        return {'ok': _classify(text), 'message': text.strip()}
+        result['bottle'] = bottle
+        return result
+
+    def _run_scripts(self, names):
+        """Run pipelines one after another, lock held; stop at the first failure.
+
+        Not _classify: `run` says "finished NAME" only when every step of
+        NAME worked, and anything else (a STOPPED line, a freedrive
+        refusal) means it did not happen, so the next one must not start.
+        """
+        log = []
+        for index, name in enumerate(names, 1):
+            text = self._dispatch(f'run {name}')
+            if isinstance(text, dict):
+                text['message'] = '\n'.join(log + [text['message']])
+                return text
+            log.append(text.strip())
+            if f'finished {name}' not in text:
+                out = {'ok': False, 'message': '\n'.join(log)}
+                if len(names) > 1:
+                    out['stopped_at'] = f'script {index} of {len(names)}: {name}'
+                return out
+        return {'ok': True, 'message': '\n'.join(log)}
+
+    def _menu(self):
+        """Return ({key: Drink}, None) or (None, why there is no menu)."""
+        if self.menu_path is None:
+            return None, ('no menu: start the server with --menu (e.g. '
+                          '--points workcell, which also picks workcell_menu.yaml)')
+        try:
+            return menu.load(self.menu_path), None
+        except menu.MenuError as exc:
+            return None, str(exc)
+
+    def drinks(self):
+        """Return the menu, each drink saying whether its scripts are taught."""
+        with self._lock:
+            why_points = self._reload()
+            drinks, why = self._menu()
+            store = self.pendant.store
+        if drinks is None:
+            return {'drinks': [], 'error': why}
+        out = {'drinks': [d.to_json(store) for d in drinks.values()],
+               'menu_file': self.menu_path}
+        if why_points:
+            out['warning'] = f'point file not re-read: {why_points}'
+        return out
+
+    def make(self, drink):
+        """Run every script of one drink, in order, as one command."""
+        if not isinstance(drink, str) or not drink.strip():
+            return _refuse('make needs a drink name')
+        drink = drink.strip().lower()
+        if not self._lock.acquire(blocking=False):
+            return _refuse('busy: a command is already running')
+        try:
+            why = self._reload()
+            if why:
+                return _refuse(f'cannot read the point file: {why}')
+            drinks, why = self._menu()
+            if drinks is None:
+                return _refuse(why)
+            entry = drinks.get(drink)
+            if entry is None:
+                return _refuse(f'no drink {drink!r} on the menu. Known: '
+                               f'{", ".join(drinks) or "none"}.')
+            # All of it checked before the first script moves anything:
+            # finding out at script 4 leaves the arm holding a bottle.
+            scripts, points = entry.missing(self.pendant.store)
+            if scripts or points:
+                parts = []
+                if scripts:
+                    parts.append('scripts not taught yet: ' + ', '.join(scripts))
+                if points:
+                    parts.append('points missing: ' + ', '.join(points))
+                return _refuse(f'{entry.name} is not ready -- '
+                               + '; '.join(parts))
+            result = self._run_scripts(entry.scripts)
+        finally:
+            self._lock.release()
+        result['drink'] = drink
+        return result
 
     def goto(self, arm, point):
         if not point:

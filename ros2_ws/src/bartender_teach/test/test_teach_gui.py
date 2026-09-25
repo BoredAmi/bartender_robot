@@ -261,8 +261,9 @@ def test_state_carries_the_tool_and_its_tip(bridge):
     s = bridge.state()
     assert s['tool'] == 'tool0'
     assert s['tip'] == [0.5, 0.1, 0.3]        # tool0 tip is the flange
-    assert {t['name'] for t in s['tools']} == {'tool0', 'whiskey_spout',
-                                               'cola_spout'}
+    assert {t['name'] for t in s['tools']} == {
+        'tool0', 'whiskey_spout', 'cola_spout',
+        'workcell_whiskey', 'workcell_vodka', 'workcell_gin'}
 
 
 def test_selecting_a_tool_moves_the_reported_tip(bridge):

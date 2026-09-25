@@ -8,6 +8,10 @@
     POST /move/point {"arm": "a", "point": "whiskey_approach"}
     POST /move/jog   {"arm": "a", "axis": "z", "amount": 20}
     POST /gripper    {"arm": "b", "position": 0.25}
+    GET  /bottles    the bottles that can be picked (grab_<bottle> pipelines)
+    POST /pick       {"bottle": "whiskey"}  -- run grab_whiskey
+    GET  /drinks     the menu, and which drinks have all their scripts taught
+    POST /make       {"drink": "whiskey_cola"}  -- run that drink's scripts
 
 Phase B (world/state/can) is read-only, no motion, no new risk. The three
 movement routes are Phase C, scoped down to "simple movement" -- see
@@ -47,11 +51,11 @@ from sensor_msgs.msg import CameraInfo, Image
 from tf2_msgs.msg import TFMessage
 
 from bartender_teach.point_store import (
-    PointStore, PointStoreError, default_points_path,
+    PointStore, PointStoreError, points_path_for,
 )
 from bartender_teach.teach_points import TeachNode
 
-from . import feasibility, movement, perception, state_view, world
+from . import feasibility, menu, movement, perception, state_view, world
 
 # Same topic, same QoS, same reasoning as open_action_server's _on_poses:
 # depth 1 and best-effort, because a queued backlog is a lie about where
@@ -185,6 +189,10 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
                 self._send(200, world.build(pose_cache.get, observe, mode).to_json())
             elif path == '/state':
                 self._send(200, state_view.build(teach_node))
+            elif path == '/bottles':
+                self._send(200, move_bridge.bottles())
+            elif path == '/drinks':
+                self._send(200, move_bridge.drinks())
             else:
                 self._send(404, {'error': 'not found'})
 
@@ -202,6 +210,12 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
                 self._do_move('jog', body, ('axis', 'amount'))
             elif path == '/gripper':
                 self._do_move('gripper', body, ('position',))
+            elif path == '/pick':
+                result = move_bridge.pick(body.get('bottle'))
+                self._send(200 if result['ok'] else 409, result)
+            elif path == '/make':
+                result = move_bridge.make(body.get('drink'))
+                self._send(200 if result['ok'] else 409, result)
             else:
                 self._send(404, {'error': 'not found'})
 
@@ -277,6 +291,16 @@ def main(args=None):
     parser.add_argument('--camera-config', default=None,
                         help='stand camera calibration YAML (default: the '
                              'sim one in this package\'s config/)')
+    parser.add_argument('--points', default=None,
+                        help='point file: a path, or a bare name like '
+                             '`workcell` for bartender_teach/config/'
+                             'workcell_points.yaml (default: the bar\'s '
+                             'taught_points.yaml)')
+    parser.add_argument('--menu', default=None,
+                        help='drinks menu: a path, or a bare name like '
+                             '`workcell` for bartender_teach/config/'
+                             'workcell_menu.yaml (default: the --points '
+                             'name, when that is a bare name)')
     # ros2 run passes --ros-args through; argparse must not choke on it.
     opts, _ = parser.parse_known_args(sys.argv[1:] if args is None else args)
 
@@ -308,13 +332,19 @@ def main(args=None):
     # or unreadable must not stop the server from starting -- goto just has
     # no points to offer until it is fixed, which /move/point's own refusal
     # already reports per request.
+    points_path = points_path_for(opts.points)
     try:
-        store = PointStore.load(default_points_path())
+        store = PointStore.load(points_path)
     except PointStoreError as exc:
         print(f'warning: {exc} -- starting with no taught points',
               file=sys.stderr)
-        store = PointStore(default_points_path())
-    move_bridge = movement.MovementBridge(teach_node, store)
+        store = PointStore(points_path)
+    menu_arg = opts.menu
+    if menu_arg is None and opts.points and os.sep not in opts.points \
+            and not opts.points.endswith(('.yaml', '.yml')):
+        menu_arg = opts.points
+    menu_path = menu.menu_path_for(menu_arg)
+    move_bridge = movement.MovementBridge(teach_node, store, menu_path)
 
     try:
         server = ThreadingHTTPServer(
@@ -337,9 +367,15 @@ def main(args=None):
     print('    POST /move/point {"arm": "a", "point": "whiskey_approach"}')
     print('    POST /move/jog   {"arm": "a", "axis": "z", "amount": 20}')
     print('    POST /gripper    {"arm": "b", "position": 0.25}')
+    print('    GET  /bottles')
+    print('    POST /pick       {"bottle": "whiskey"}')
+    print('    GET  /drinks')
+    print('    POST /make       {"drink": "whiskey_cola"}')
+    print(f'  points: {points_path}')
+    print(f'  menu:   {menu_path or "none (--menu)"}')
     if opts.host not in ('127.0.0.1', 'localhost'):
         print(f'\n  WARNING: bound to {opts.host}. This process moves the '
-              f'robot arms (/move/*, /gripper).\n           Only do this on '
+              f'robot arms (/move/*, /gripper, /pick, /make).\n           Only do this on '
               f'a trusted, isolated robot LAN.')
     print('\n  Ctrl-C to stop.\n')
 
