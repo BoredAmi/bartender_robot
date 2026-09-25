@@ -193,6 +193,34 @@ def bottle_spout(bottle):
         note=f'pour spout of the {bottle} bottle, held in the side grasp')
 
 
+# ---- the workcell's bottles -------------------------------------------------
+#
+# The one-arm workcell grasps from the side too, but tool0 is turned
+# differently there. At the taught grab_whiskey pose (workcell_points.yaml):
+#     tool0 local +X -> base +Z   (up)
+#     tool0 local +Y -> base +Y   (along the bottle row)
+#     tool0 local +Z -> base -X   (the approach direction, `jog tz`)
+# Same Robotiq 2F-85 straight on tool0, so the grip point is the same
+# SIDE_GRIP_AHEAD_OF_TOOL0 in front of the flange.
+#
+# Measured on the real bottles, from the grip point: the spout is `up` above
+# it and `ahead` further along tz. There is no model to derive these from,
+# unlike the bar's; re-measure here if a bottle or its grasp height changes.
+WORKCELL_SPOUT = {           # bottle: (up, ahead) in metres
+    'whiskey': (0.070, 0.020),
+    'vodka': (0.085, 0.015),
+    'gin': (0.065, 0.020),
+}
+
+
+def workcell_spout(bottle, grip_ahead=SIDE_GRIP_AHEAD_OF_TOOL0):
+    """Build the spout tool of a workcell bottle held in its taught grasp."""
+    up, ahead = WORKCELL_SPOUT[bottle]
+    return Tool(f'workcell_{bottle}', (up, 0.0, grip_ahead + ahead), IDENTITY,
+                f'workcell: spout of the {bottle} bottle, {up * 1000:.0f}mm '
+                f'up and {ahead * 1000:.0f}mm along tz from the grip point')
+
+
 # Orientation is left as identity on both. Only the tip POSITION is used --
 # the pour drives the tilt angle itself, and pinning the tool's orientation
 # too would over-constrain it. The transforms carry orientation anyway, so a
@@ -201,6 +229,7 @@ TOOLS = {
     TOOL0.name: TOOL0,
     'whiskey_spout': bottle_spout('whiskey'),
     'cola_spout': bottle_spout('cola'),
+    **{f'workcell_{b}': workcell_spout(b) for b in WORKCELL_SPOUT},
 }
 
 

@@ -263,11 +263,12 @@ def test_no_file_argument_means_the_default_file():
 
 
 def test_the_shipped_workcell_file_loads_with_home():
-    """It is what `--file workcell` opens on a fresh checkout."""
+    """It is what `--file workcell` opens, and taught points never replace home."""
     from bartender_teach.point_store import points_path_for
     path = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), 'config', 'workcell_points.yaml')
     store = PointStore.load(path, missing_ok=False)
-    assert set(store.points) == {'home'}
+    assert 'home' in store.points
+    assert not store.points['home'].pose  # the SRDF state, never taught
     assert store.points['home'].group == 'ur_manipulator'
     assert points_path_for('workcell').endswith('workcell_points.yaml')

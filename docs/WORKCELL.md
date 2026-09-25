@@ -358,6 +358,29 @@ Things to know:
 Full reference:
 [`bartender_teach/README.md`](../ros2_ws/src/bartender_teach/README.md).
 
+### Spout tools (for pouring)
+
+Each bottle has a tool frame at its spout, so the arm can tilt the bottle
+about the spout instead of the flange. Then the spout stays over the glass
+while the bottle tips:
+
+```
+teach[a]> tool workcell_whiskey
+teach[a]> jog ry 15          # tilts about the whiskey spout
+teach[a]> tool tool0         # back to the flange
+```
+
+| Tool | Spout, from the grip point |
+|---|---|
+| `workcell_whiskey` | 70 mm up, 20 mm further along tz |
+| `workcell_vodka` | 85 mm up, 15 mm further along tz |
+| `workcell_gin` | 65 mm up, 20 mm further along tz |
+
+The grip point is 145 mm in front of the flange along tz. The measurements
+are `WORKCELL_SPOUT` in
+[`tool_frames.py`](../ros2_ws/src/bartender_teach/bartender_teach/tool_frames.py). Only rotation jogs use the tool;
+translation jogs and saved points are unaffected.
+
 ### Picking a bottle through the API
 
 Full reference, for whoever writes the calling program: [WORKCELL_API.md](WORKCELL_API.md).
