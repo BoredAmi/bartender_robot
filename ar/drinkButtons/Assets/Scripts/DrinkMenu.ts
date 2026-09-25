@@ -32,23 +32,34 @@ export class DrinkMenu extends BaseScriptComponent {
   spawnDistance: number = 80;
 
   @input
+  @hint("Seconds the order confirmation stays up before the menu hides")
+  closeDelay: number = 1.5;
+
+  @input
   @hint("Editor preview only: thumbs-up cannot be simulated, so a click confirms")
   debugConfirmOnPinch: boolean = false;
 
   private armed: Drink | null = null;
   private hands: TrackedHand[] = [];
   private hold!: HoldDetector;
+  private isOpen = false;
+  private hideAfterOrder!: DelayedCallbackEvent;
+  private gestures: GestureModule = require("LensStudio:GestureModule");
 
   onAwake() {
     this.hold = new HoldDetector(this.holdSeconds);
-    this.status.text = "Point at a drink, then thumbs up";
     // SIK singletons and Interactables are only ready after every onAwake has run.
     this.createEvent("OnStartEvent").bind(() => this.start());
     this.createEvent("UpdateEvent").bind(() => this.checkThumbsUp());
+    this.hideAfterOrder = this.createEvent("DelayedCallbackEvent");
+    this.hideAfterOrder.bind(() => {
+      if (!this.isOpen) this.setVisible(false);
+    });
+    // Palm taps come from hand tracking only, so the preview opens the menu with a click.
+    if (global.deviceInfoSystem.isEditor()) this.createEvent("TapEvent").bind(() => this.open());
   }
 
   private start() {
-    this.placeInFrontOfWearer();
     const handData = HandInputData.getInstance();
     this.hands = [handData.getHand("left"), handData.getHand("right")];
     this.buttons.forEach((b, i) => {
@@ -63,6 +74,25 @@ export class DrinkMenu extends BaseScriptComponent {
         this.order(DRINKS[i]);
       });
     });
+    for (const hand of [GestureModule.HandType.Left, GestureModule.HandType.Right]) {
+      this.gestures.getPalmTapDownEvent(hand).add(() => this.open());
+    }
+    this.setVisible(false);
+  }
+
+  private open() {
+    if (this.isOpen) return;
+    this.isOpen = true;
+    this.armed = null;
+    this.buttons.forEach((b) => b.getTransform().setLocalScale(vec3.one()));
+    this.status.text = "Point at a drink, then thumbs up";
+    this.placeInFrontOfWearer();
+    this.setVisible(true);
+  }
+
+  private setVisible(visible: boolean) {
+    // Children, not this object: disabling it would also stop this script's own events.
+    this.sceneObject.children.forEach((c) => (c.enabled = visible));
   }
 
   private placeInFrontOfWearer() {
@@ -74,6 +104,7 @@ export class DrinkMenu extends BaseScriptComponent {
   }
 
   private arm(drink: Drink) {
+    if (!this.isOpen) return;
     this.armed = drink;
     this.buttons.forEach((b, i) => {
       const s = DRINKS[i] === drink ? 1.15 : 1;
@@ -85,13 +116,17 @@ export class DrinkMenu extends BaseScriptComponent {
   private checkThumbsUp() {
     const params = { curlRatio: this.curlRatio, thumbUpMin: this.thumbUpMin };
     const up = this.hands.some((h) => h.isTracked() && isThumbsUp(joints(h), params));
-    if (this.hold.update(up, getTime()) && this.armed) this.order(this.armed);
+    if (this.hold.update(up, getTime()) && this.isOpen && this.armed) this.order(this.armed);
   }
 
   // The one seam for the robot link: replace the body with the HTTP call to bartender_api.
   private order(drink: Drink) {
     print(`ORDER ${drink}`);
     this.status.text = `Ordered: ${label(drink)} ✓`;
+    // Closed at once so a still-held thumbs-up or a stray hover cannot place a second order.
+    this.isOpen = false;
+    this.armed = null;
+    this.hideAfterOrder.reset(this.closeDelay);
   }
 }
 
