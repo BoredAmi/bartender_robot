@@ -20,12 +20,19 @@ def generate_launch_description():
         'headless', default_value='false',
         description='Run Gazebo server only, no GUI.',
     )
+    headless_rendering_arg = DeclareLaunchArgument(
+        'headless_rendering', default_value='false',
+        description='With headless:=true, render the cameras through EGL.',
+    )
 
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_gazebo, 'launch', 'sim.launch.py')
         ),
-        launch_arguments={'headless': LaunchConfiguration('headless')}.items(),
+        launch_arguments={
+            'headless': LaunchConfiguration('headless'),
+            'headless_rendering': LaunchConfiguration('headless_rendering'),
+        }.items(),
     )
 
     joint_state_broadcaster_spawner = Node(
@@ -115,6 +122,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         headless_arg,
+        headless_rendering_arg,
         sim,
         delayed_controller_spawners,
         pour_action_server,
