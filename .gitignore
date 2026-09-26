@@ -8,5 +8,6 @@ log/
 # Lens Studio editor state (panel layout, IntelliSense config)
 ar/**/Workspaces/
 ar/**/jsconfig.json
+
 .env
 photos/
