@@ -66,3 +66,13 @@ def test_export_keeps_each_scene_in_one_split(tmp_path):
     assert answer['in_gripper'] == 'whiskey'
     assert answer['glasses'][0]['name'] == 'glass'
     assert first['images'][0].endswith('_overhead_rgb.png')
+
+
+def test_world_labels_match_label_ids():
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    world = Path(__file__).parent.parent / 'ros2_ws/src/bartender_gazebo/worlds/bar_world.sdf'
+    labels = {inc.findtext('name'): int(inc.findtext('plugin/label'))
+              for inc in ET.parse(world).iter('include') if inc.find('plugin/label') is not None}
+    assert labels == {'jack_daniels_bottle': LABEL_IDS['whiskey'], 'cola_bottle': LABEL_IDS['cola'],
+                      'beer_bottle': LABEL_IDS['beer'], 'serving_glass': LABEL_IDS['glass']}
