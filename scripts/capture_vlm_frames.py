@@ -48,7 +48,8 @@ DISTRACTOR_SDF = '/tmp/vlm_distractor.sdf'
 def held_bottle(state):
     """Bottle in the gripper for a PourDrink feedback state, e.g. 'pouring_whiskey'."""
     phase, _, bottle = state.rpartition('_')
-    return bottle if phase in HELD_PHASES else None
+    # 'returning_home' parses as phase 'returning' too; only real bottles count.
+    return bottle if phase in HELD_PHASES and bottle in MODELS else None
 
 
 def tilt_deg(q):

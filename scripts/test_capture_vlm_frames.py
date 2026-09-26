@@ -12,6 +12,7 @@ def test_held_follows_the_pour_state_machine():
     assert held_bottle('closing_on_whiskey') is None
     assert held_bottle('releasing_whiskey') is None
     assert held_bottle('') is None
+    assert held_bottle('returning_home') is None
 
 
 def test_tilt_of_a_toppled_bottle():
