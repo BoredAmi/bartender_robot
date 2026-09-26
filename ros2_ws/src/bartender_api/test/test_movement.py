@@ -291,6 +291,19 @@ def _finishing(calls):
     return dispatch
 
 
+def test_choices_answers_while_a_drink_is_being_made(tmp_path):
+    bridge = _make_bridge(tmp_path, {'grab_whiskey': ['grab_point'],
+                                     'grab_gin': ['grab_point'],
+                                     'pour_cola': ['grab_point']})
+    bridge._lock.acquire()   # what /make holds for the whole drink
+    try:
+        drinks, bottles = bridge.choices()
+    finally:
+        bridge._lock.release()
+    assert drinks == {'whiskey_cola': 'Whiskey & Cola', 'gin_sprite': 'gin_sprite'}
+    assert bottles == ['gin', 'whiskey']
+
+
 def test_drinks_says_which_are_ready_and_what_is_missing(tmp_path):
     out = {d['drink']: d for d in _make_bridge(tmp_path).drinks()['drinks']}
     assert out['whiskey_cola']['ready'] is True

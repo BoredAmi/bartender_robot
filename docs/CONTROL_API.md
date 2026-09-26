@@ -138,6 +138,24 @@ The menu is a YAML file (`--menu`, which defaults to the `--points` name:
 scripts or missing points is refused before anything moves. See
 [WORKCELL.md](WORKCELL.md#making-a-drink-through-the-api).
 
+**Ask in plain words.** `POST /ask {"text": "a jack and coke please"}`
+tells you which call a sentence means, and **runs nothing**. The caller, or
+a person, sends the call it returns:
+
+```json
+{"ok": true, "action": "make", "confidence": 0.89,
+ "request": {"method": "POST", "path": "/make", "body": {"drink": "whiskey_cola"}}}
+```
+
+It asks TypeSafe's Jev, through OpenRouter, in one call of about 0.3–0.5 s.
+The first call can take about 2 s. The text is sent to OpenRouter, and
+`JEV_KEY` must be set, or the route answers 503. It picks one of
+`/world`, `/drinks`, `/make` (a drink from the live menu) or `/pick` (a
+taught bottle), or refuses. A pick below 0.6 confidence
+(`intent.MIN_CONFIDENCE`) is answered 422 with `why` (for example "please
+rephrase" or "which drink?"), never with a guess. `/can` is not offered
+yet, because it needs a station and a glass that free text rarely names.
+
 **From another machine on the same LAN:** bind to this host's LAN address
 instead of localhost, e.g. `ros2 run bartender_api server --host
 192.168.1.155`, and use that address in place of `127.0.0.1` above. The
@@ -305,6 +323,12 @@ both start on it at once (`bartender_api/drink/label.py`):
    the inventory. If the text names a stocked bottle, that is the answer at
    once and Gemini's is thrown away. The crop is enlarged 2× first; each
    bottle takes about 1.5–3.5 s on CPU.
+   If the text names no stocked brand outright, one more quick check picks
+   a brand from it before waiting on Gemini. That check is TypeSafe's Jev,
+   through OpenRouter, when `JEV_KEY` is set (70–500 ms per call; the text
+   is sent to OpenRouter). Otherwise it is `label.fuzzy`, a local string
+   match that takes about 2 ms. A pick counts only at confidence ≥ 0.8, and
+   its `source` is `jev` or `fuzzy`.
 2. **Otherwise Gemini's answer**, unless it is unknown. It has been running
    since the start, so the wait is about Gemini's own time, not OCR's plus
    Gemini's. A Gemini request is cut off after 15 s (`vlm.TIMEOUT_S`).

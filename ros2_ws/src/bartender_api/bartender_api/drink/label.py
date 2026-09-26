@@ -15,6 +15,7 @@ appear in its text, and a type must be spelled on the label, so a guess from
 the bottle's shape is not reported. `read` always keeps the raw reading.
 """
 import concurrent.futures
+import dataclasses
 import difflib
 import re
 import unicodedata
@@ -24,6 +25,8 @@ import yaml
 
 # ponytail: calibration knob; brand similarity (0..1) needed to accept a row.
 MIN_BRAND_MATCH = 0.8
+# ponytail: calibration knob; fuzzy() refuses when the top two brands are closer than this.
+FUZZY_MARGIN = 0.1
 # Reported when the brand was not read and only one row has the type read.
 TYPE_ONLY_CONFIDENCE = 0.6
 # Reported for a bottle not in the inventory, brand and type as Gemini read them.
@@ -151,6 +154,32 @@ def _brand_score(read, bottle):
     return max(difflib.SequenceMatcher(None, brand, n).ratio() for n in names)
 
 
+def fuzzy(text, options):
+    """Pick the option whose spelling best matches a run of words in `text`.
+
+    Jev-style typed choice -- options {name: [spellings]} in, (name | None,
+    confidence) out -- but rule-based: difflib against every run of up to one
+    word more than the spelling, since OCR splits and merges words. None when
+    nothing reaches MIN_BRAND_MATCH or the top two are within FUZZY_MARGIN.
+    A model backend (Jev, Laya) can stand in with the same signature.
+    """
+    words = [w for w in map(_norm, _fold(text).split()) if w]
+    runs = {''.join(words[i:i + n]) for n in range(1, 5)
+            for i in range(len(words) - n + 1)}
+
+    def score(spelling):
+        target = _norm(spelling)
+        return max((difflib.SequenceMatcher(None, target, r).ratio()
+                    for r in runs if target), default=0.0)
+    ranked = sorted(((max(map(score, spellings), default=0.0), name)
+                     for name, spellings in options.items()), reverse=True)
+    if not ranked or ranked[0][0] < MIN_BRAND_MATCH:
+        return None, 0.0
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < FUZZY_MARGIN:
+        return None, 0.0
+    return ranked[0][1], round(ranked[0][0], 3)
+
+
 def _readable_new_bottle(read):
     brand = _norm(read.get('brand', ''))
     return (read.get('type') not in ('other', 'unknown', None) and bool(brand)
@@ -184,18 +213,54 @@ def match(read, inventory, source):
                    read)
 
 
-def read_label(crop, inventory, ocr=None, ask=None):
-    """Run OCR and Gemini at once; OCR's answer if it names a stocked bottle, else Gemini's."""
+def _decided(text, inventory, decide):
+    """The inventory row `decide` picks from OCR text, as a Label, or None."""
+    brand, confidence = decide(
+        text, {b.brand: [b.brand, *b.aliases] for b in inventory})
+    if brand is None:
+        return None
+    # match() still breaks a tie between sizes of the chosen brand by the volume read.
+    row = match(dict(parse(text), brand=brand), inventory, 'ocr')
+    return dataclasses.replace(row, confidence=confidence, source=decide.__name__,
+                               reason=f'brand picked from the OCR text by {decide.__name__}')
+
+
+def _knows(reading):
+    # Anything but 'inventory' here came from _decided: gemini and ocr rows are never `known`.
+    return reading.source not in (None, 'ocr', 'gemini') and reading.confidence >= MIN_BRAND_MATCH
+
+
+def _read_locally(crop, inventory, ocr, deciders):
+    """OCR's reading, or when it names no stocked brand, the first sure pick of deciders."""
+    if ocr is None:
+        return unknown('no OCR (pip install paddlepaddle paddleocr)')
+    text, why = ocr(crop)
+    if text is None:
+        return unknown(why)
+    local = match(parse(text), inventory, 'ocr')
+    if _knows(local):
+        return local
+    for decide in deciders:
+        picked = _decided(text, inventory, decide)
+        if picked is not None and _knows(picked):
+            return picked
+    return local
+
+
+def read_label(crop, inventory, ocr=None, ask=None, deciders=(fuzzy,)):
+    """Run OCR and Gemini at once; OCR's answer if it names a stocked bottle, else Gemini's.
+
+    `deciders` get a second look, in order, at OCR text that names no
+    stocked brand outright, before waiting on Gemini: the fast local ones
+    first, a remote model (jev) as the fallback. () skips it.
+    """
     # Costs a Gemini call even when OCR then knows the bottle, for no wait when it doesn't.
     remote_job = _gemini_pool.submit(ask, crop) if ask is not None else None
-    local = unknown('no OCR (pip install paddlepaddle paddleocr)')
-    if ocr is not None:
-        text, why = ocr(crop)
-        local = unknown(why) if text is None else match(parse(text), inventory, 'ocr')
-        if local.source == 'inventory' and local.confidence >= MIN_BRAND_MATCH:
-            if remote_job is not None:
-                remote_job.cancel()   # only stops a call not yet started
-            return local
+    local = _read_locally(crop, inventory, ocr, deciders)
+    if _knows(local):
+        if remote_job is not None:
+            remote_job.cancel()   # only stops a call not yet started
+        return local
     if remote_job is None:
         return local
     answer, why = remote_job.result()

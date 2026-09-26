@@ -57,6 +57,11 @@ _ROTATION_AXES = {'rx', 'ry', 'rz'}
 GRAB_PREFIX = 'grab_'
 
 
+def _bottle_names(pipelines):
+    return [name[len(GRAB_PREFIX):] for name in sorted(pipelines)
+            if name.startswith(GRAB_PREFIX) and len(name) > len(GRAB_PREFIX)]
+
+
 def _is_joint_axis(axis):
     return axis.startswith('j') and axis[1:].isdigit() and 1 <= int(axis[1:]) <= 6
 
@@ -164,10 +169,9 @@ class MovementBridge:
         with self._lock:
             why = self._reload()
             pipelines = self.pendant.store.pipelines
-        found = [{'bottle': name[len(GRAB_PREFIX):], 'pipeline': name,
-                  'steps': len(pipelines[name])}
-                 for name in sorted(pipelines)
-                 if name.startswith(GRAB_PREFIX) and len(name) > len(GRAB_PREFIX)]
+        found = [{'bottle': bottle, 'pipeline': GRAB_PREFIX + bottle,
+                  'steps': len(pipelines[GRAB_PREFIX + bottle])}
+                 for bottle in _bottle_names(pipelines)]
         out = {'bottles': found, 'points_file': self.pendant.store.path}
         if why:
             out['warning'] = f'point file not re-read: {why}'
@@ -235,6 +239,21 @@ class MovementBridge:
             return menu.load(self.menu_path), None
         except menu.MenuError as exc:
             return None, str(exc)
+
+    def choices(self):
+        """Return ({drink key: name}, [bottle]) for /ask, without waiting on a running command.
+
+        Read straight from disk into a store of its own: drinks() and
+        bottles() take the command lock, which /make holds for a whole drink,
+        so asking during one would hang until the drink was done.
+        """
+        drinks, _ = self._menu()
+        try:
+            pipelines = PointStore.load(self.pendant.store.path).pipelines
+        except PointStoreError:
+            pipelines = {}   # /ask then answers "which bottle? known: none"
+        return ({key: d.name for key, d in (drinks or {}).items()},
+                _bottle_names(pipelines))
 
     def drinks(self):
         """Return the menu, each drink saying whether its scripts are taught."""
