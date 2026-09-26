@@ -259,7 +259,7 @@
       <link name="link">
         <sensor name="stand_depth" type="depth_camera">
           <always_on>true</always_on>
-          <update_rate>5</update_rate>
+          <update_rate>15</update_rate>
           <topic>/bartender/stand_camera/depth</topic>
           <ignition_frame_id>stand_camera_optical_frame</ignition_frame_id>
           <camera>
@@ -284,7 +284,7 @@
         <!-- Colour twin of stand_depth: same pose, FOV and size, so pixels line up (OAK-D aligns RGB to depth). -->
         <sensor name="stand_rgb" type="camera">
           <always_on>true</always_on>
-          <update_rate>5</update_rate>
+          <update_rate>15</update_rate>
           <topic>/bartender/stand_camera/rgb</topic>
           <ignition_frame_id>stand_camera_optical_frame</ignition_frame_id>
           <camera>
