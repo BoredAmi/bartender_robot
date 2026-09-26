@@ -201,7 +201,9 @@ def sample_arm(rng, params, layout):
         kind = 'over_table'
     if kind == 'home' or kind == 'over_bottle':
         return 'home', None, HOME
-    ik = arm_ik(rng.uniform(0.35, 0.75), rng.uniform(0.35, 0.65))
+    ik = None
+    while ik is None:  # far and high together is out of reach; draw again
+        ik = arm_ik(rng.uniform(0.35, 0.75), rng.uniform(0.35, 0.65))
     return kind, None, arm_joints(rng.uniform(-1.1, 1.1) + PAN_OFFSET, *ik, rng.uniform(-math.pi, math.pi))
 
 

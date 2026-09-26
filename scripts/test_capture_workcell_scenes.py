@@ -71,3 +71,11 @@ def test_appearance_can_be_turned_off():
     assert look is None and len(colours) >= 3
     look, _ = sample_appearance(random.Random(4), {**SCENE_PARAMS, 'appearance_p': 1.0})
     assert look['sun']['direction'][2] < 0  # the sun shines down
+
+
+def test_over_table_always_finds_a_reachable_pose():
+    params = {**SCENE_PARAMS, 'arm_pose': {'over_table': 1.0}}
+    rng = random.Random(6)
+    for _ in range(2000):
+        kind, _, joints = sample_arm(rng, params, {})
+        assert kind == 'over_table' and len(joints) == 6
