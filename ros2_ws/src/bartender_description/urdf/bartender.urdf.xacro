@@ -143,7 +143,7 @@
     <sensor name="arm_a_wrist_camera" type="camera">
       <pose>0.08 0 0.10 0 -1.5708 0</pose>
       <always_on>true</always_on>
-      <update_rate>5</update_rate>
+      <update_rate>15</update_rate>
       <topic>/bartender/arm_a/wrist_camera/image_raw</topic>
       <camera>
         <horizontal_fov>1.047</horizontal_fov>
@@ -164,7 +164,7 @@
     <sensor name="arm_b_wrist_camera" type="camera">
       <pose>0.08 0 0.10 0 -1.5708 0</pose>
       <always_on>true</always_on>
-      <update_rate>5</update_rate>
+      <update_rate>15</update_rate>
       <topic>/bartender/arm_b/wrist_camera/image_raw</topic>
       <camera>
         <horizontal_fov>1.047</horizontal_fov>
