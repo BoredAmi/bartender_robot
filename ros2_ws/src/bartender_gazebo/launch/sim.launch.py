@@ -193,6 +193,12 @@ def generate_launch_description():
             '@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/bartender/overhead_camera/image_raw'
             '@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/bartender/overhead_camera/segmentation/labels_map'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/bartender/stand_camera/segmentation/labels_map'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/bartender/arm_a/wrist_camera/segmentation/labels_map'
+            '@sensor_msgs/msg/Image[ignition.msgs.Image',
         ],
         output='screen',
     )

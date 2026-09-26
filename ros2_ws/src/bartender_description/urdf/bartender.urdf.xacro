@@ -158,6 +158,24 @@
         </clip>
       </camera>
     </sensor>
+    <sensor name="bartender_arm_a_wrist_camera_segmentation" type="segmentation">
+      <pose>0.08 0 0.10 0 -1.5708 0</pose>
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>/bartender/arm_a/wrist_camera/segmentation</topic>
+      <camera>
+        <segmentation_type>semantic</segmentation_type>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+        </image>
+        <clip>
+          <near>0.03</near>
+          <far>5.0</far>
+        </clip>
+      </camera>
+    </sensor>
   </gazebo>
 
   <gazebo reference="b_tool0">

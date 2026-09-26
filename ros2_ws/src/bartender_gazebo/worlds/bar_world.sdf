@@ -151,15 +151,23 @@
          nothing, so there is nothing to include for them. They are named in
          layout.BOTTLE_SLOTS, and that is where a new bottle gets added. -->
 
+    <!-- Label plugins tag objects for the segmentation cameras; the numbers are
+         scripts/vlm_labels.py LABEL_IDS (test_vlm_labels.py checks they match). -->
     <include>
       <uri>model://jack_daniels_bottle</uri>
       <name>jack_daniels_bottle</name>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
+        <label>1</label>
+      </plugin>
       <pose>0.08 -0.30 0.9 0 0 0</pose>
     </include>
 
     <include>
       <uri>model://cola_bottle</uri>
       <name>cola_bottle</name>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
+        <label>2</label>
+      </plugin>
       <pose>0.08 -0.15 0.9 0 0 0</pose>
     </include>
 
@@ -210,6 +218,9 @@
     <include>
       <uri>model://beer_bottle</uri>
       <name>beer_bottle</name>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
+        <label>3</label>
+      </plugin>
       <pose>0.08 0.0 0.9 0 0 0</pose>
     </include>
 
@@ -233,6 +244,9 @@
     <include>
       <uri>model://serving_glass</uri>
       <name>serving_glass</name>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
+        <label>10</label>
+      </plugin>
       <pose>0.20 -0.55 0.9 0 0 0</pose>
     </include>
 
@@ -300,6 +314,23 @@
             </clip>
           </camera>
         </sensor>
+        <sensor name="bartender_stand_camera_segmentation" type="segmentation">
+          <always_on>true</always_on>
+          <update_rate>15</update_rate>
+          <topic>/bartender/stand_camera/segmentation</topic>
+          <camera>
+            <segmentation_type>semantic</segmentation_type>
+            <horizontal_fov>1.2566</horizontal_fov>
+            <image>
+              <width>640</width>
+              <height>400</height>
+            </image>
+            <clip>
+              <near>0.2</near>
+              <far>5.0</far>
+            </clip>
+          </camera>
+        </sensor>
       </link>
     </model>
 
@@ -320,6 +351,23 @@
               <width>320</width>
               <height>240</height>
               <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.2</near>
+              <far>3.0</far>
+            </clip>
+          </camera>
+        </sensor>
+        <sensor name="bartender_overhead_camera_segmentation" type="segmentation">
+          <always_on>true</always_on>
+          <update_rate>15</update_rate>
+          <topic>/bartender/overhead_camera/segmentation</topic>
+          <camera>
+            <segmentation_type>semantic</segmentation_type>
+            <horizontal_fov>1.2566</horizontal_fov>
+            <image>
+              <width>320</width>
+              <height>240</height>
             </image>
             <clip>
               <near>0.2</near>
