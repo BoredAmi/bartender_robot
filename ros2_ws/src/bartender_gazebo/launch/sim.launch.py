@@ -17,7 +17,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import (Command, FindExecutable, LaunchConfiguration,
-                                  PathJoinSubstitution)
+                                  PathJoinSubstitution, PythonExpression)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -28,6 +28,13 @@ def generate_launch_description():
         'headless', default_value='false',
         description=('Run Gazebo server only, no GUI (avoids the Ignition Qt '
                      'GUI, useful when scripting/tuning against the sim).'),
+    )
+    headless_rendering = LaunchConfiguration('headless_rendering')
+    headless_rendering_arg = DeclareLaunchArgument(
+        'headless_rendering', default_value='false',
+        description=('With headless:=true, render the camera sensors through '
+                     'EGL. Needed on a GPU box with no display, where the '
+                     'cameras publish nothing otherwise.'),
     )
     scene_args = [
         DeclareLaunchArgument('world', default_value='bar_world.sdf',
@@ -77,11 +84,21 @@ def generate_launch_description():
         output='screen',
         condition=UnlessCondition(headless),
     )
+    # Off by default: EGL needs a GPU driver that exposes an EGL device, which
+    # a Docker-on-WSL setup without GPU passthrough does not have.
     gz_sim_headless = ExecuteProcess(
         cmd=['ign', 'gazebo', '-s', '-r', world_path],
         additional_env=gz_sim_env,
         output='screen',
-        condition=IfCondition(headless),
+        condition=IfCondition(PythonExpression(
+            ["'", headless, "' == 'true' and '", headless_rendering, "' != 'true'"])),
+    )
+    gz_sim_headless_rendering = ExecuteProcess(
+        cmd=['ign', 'gazebo', '-s', '--headless-rendering', '-r', world_path],
+        additional_env=gz_sim_env,
+        output='screen',
+        condition=IfCondition(PythonExpression(
+            ["'", headless, "' == 'true' and '", headless_rendering, "' == 'true'"])),
     )
 
     # Rendered through render_bartender_urdf.py rather than xacro directly:
@@ -180,8 +197,10 @@ def generate_launch_description():
 
     return LaunchDescription(scene_args + [
         headless_arg,
+        headless_rendering_arg,
         gz_sim,
         gz_sim_headless,
+        gz_sim_headless_rendering,
         robot_state_publisher,
         spawn_robot,
         clock_bridge,
