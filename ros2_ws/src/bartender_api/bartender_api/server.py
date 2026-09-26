@@ -12,6 +12,7 @@
     POST /pick       {"bottle": "whiskey"}  -- run grab_whiskey
     GET  /drinks     the menu, and which drinks have all their scripts taught
     POST /make       {"drink": "whiskey_cola"}  -- run that drink's scripts
+    POST /ask        {"text": "a whiskey coke please"}  -- which call that is (Jev; runs nothing)
 
 Phase B (world/state/can) is read-only, no motion, no new risk. The three
 movement routes are Phase C, scoped down to "simple movement" -- see
@@ -57,8 +58,8 @@ from bartender_teach.point_store import (
 )
 from bartender_teach.teach_points import TeachNode
 
-from .drink import label, ocr, vlm
-from . import feasibility, menu, movement, perception, state_view, world
+from .drink import jev, label, ocr, vlm
+from . import feasibility, intent, menu, movement, perception, state_view, world
 
 # Same topic, same QoS, same reasoning as open_action_server's _on_poses:
 # depth 1 and best-effort, because a queued backlog is a lie about where
@@ -193,6 +194,7 @@ def make_label_watcher(depth_cache, calib, inventory):
     """
     read_text = ocr.make_reader()
     ask = vlm.make_asker(label.PROMPT, label.schema(inventory))
+    deciders = (label.fuzzy, *filter(None, [jev.make_jev()]))
     if read_text is None and ask is None:
         return None
     known = {}   # station -> (read at, Label)
@@ -213,7 +215,7 @@ def make_label_watcher(depth_cache, calib, inventory):
         if box is None:
             return label.unknown(why)
         u0, u1, v0, v1 = box
-        return label.read_label(bgr[v0:v1, u0:u1], inventory, read_text, ask)
+        return label.read_label(bgr[v0:v1, u0:u1], inventory, read_text, ask, deciders)
 
     def see(station, occupied):
         with lock:
@@ -242,7 +244,7 @@ def make_observer(depth_cache, calib):
 
 
 def make_handler(pose_cache, teach_node, move_bridge, observe=None,
-                 mode='ground_truth', see_label=None):
+                 mode='ground_truth', see_label=None, ask_jev=None):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -305,6 +307,8 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
             elif path == '/make':
                 result = move_bridge.make(body.get('drink'))
                 self._send(200 if result['ok'] else 409, result)
+            elif path == '/ask':
+                self._do_ask(body)
             else:
                 self._send(404, {'error': 'not found'})
 
@@ -318,6 +322,14 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
                 self._send(400, {'error': 'args must be a JSON object'})
                 return
             self._send(200, feasibility.can(verb, args))
+
+        def _do_ask(self, body):
+            if ask_jev is None:
+                self._send(503, {'error': 'set JEV_KEY to use /ask'})
+                return
+            drinks, bottles = move_bridge.choices()
+            result = intent.route(body.get('text'), drinks, bottles, ask_jev)
+            self._send(200 if result['ok'] else 422, result)
 
         def _do_move(self, kind, body, field_names):
             arm = body.get('arm', '')
@@ -452,7 +464,7 @@ def main(args=None):
         server = ThreadingHTTPServer(
             (opts.host, opts.port),
             make_handler(pose_cache, teach_node, move_bridge, observe,
-                         opts.perception, see_label))
+                         opts.perception, see_label, jev.make_asker()))
     except OSError as exc:
         print(f'cannot bind {opts.host}:{opts.port}: {exc}', file=sys.stderr)
         executor.shutdown()
@@ -473,6 +485,7 @@ def main(args=None):
     print('    POST /pick       {"bottle": "whiskey"}')
     print('    GET  /drinks')
     print('    POST /make       {"drink": "whiskey_cola"}')
+    print('    POST /ask        {"text": "a whiskey coke please"}')
     print(f'  points: {points_path}')
     print(f'  menu:   {menu_path or "none (--menu)"}')
     if opts.host not in ('127.0.0.1', 'localhost'):
