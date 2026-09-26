@@ -11,3 +11,6 @@ ar/**/jsconfig.json
 
 .env
 photos/
+# VLA/VLM recordings, datasets and checkpoints (live on the HF Hub, not in git)
+data/
+outputs/
