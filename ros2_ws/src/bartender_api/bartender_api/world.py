@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, fields
 
 from bartender_open import layout as L
 
+from .drink.label import Label
 from .perception import Observation, unknown
 from .reach import arms_within_reach
 
@@ -75,6 +76,7 @@ class Station:
     xy: list
     reachable_by: list
     live: GroundTruth | Observation
+    label: Label | None = None
 
 
 @dataclass
@@ -91,6 +93,8 @@ class World:
         doc = asdict(self)
         for station in doc['stations']:
             station.update(station.pop('live'))
+            if station['label'] is None:
+                del station['label']
         return doc
 
 
@@ -168,8 +172,8 @@ def _live(name, kind, live, observe, mode):
     return _compare(seen, live) if mode == 'compare' else seen
 
 
-def build(pose_lookup, observe=None, mode='ground_truth'):
-    """Assemble /world from injected pose_lookup/observe, with bottle poses per `mode`."""
+def build(pose_lookup, observe=None, mode='ground_truth', see_label=None):
+    """Assemble /world from injected lookups, with bottle poses per `mode`."""
     if mode not in MODES:
         raise ValueError(f'mode must be one of {MODES}, not {mode!r}')
     if mode != 'ground_truth' and observe is None:
@@ -178,9 +182,12 @@ def build(pose_lookup, observe=None, mode='ground_truth'):
     for name in sorted(L.STATIONS):
         xy = L.STATIONS[name]
         kind = _kind_of(name)
-        live = pose_lookup(STATION_MODEL.get(name, name))
-        stations.append(Station(name, kind, list(xy), _reachable_by(kind, xy),
-                                _live(name, kind, live, observe, mode)))
+        live = _live(name, kind, pose_lookup(STATION_MODEL.get(name, name)),
+                     observe, mode)
+        stations.append(Station(
+            name, kind, list(xy), _reachable_by(kind, xy), live,
+            see_label(name, live.occupied)
+            if see_label and kind == 'bottle' else None))
     for xy in L.free_slots():
         stations.append(Station(_slot_id(xy), 'empty_slot', list(xy),
                                 L.servicing_arms(xy),

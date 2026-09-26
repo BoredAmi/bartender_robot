@@ -91,6 +91,25 @@ def _to_optical(T, xyz):
     return (np.asarray(xyz, dtype=float) - t) @ R
 
 
+def station_box(K, T, centre_xy, radius, z_range, shape):
+    """Return ((u0, u1, v0, v1), None) bounding a station's volume in the image, or (None, why)."""
+    fx, fy, cx, cy = K
+    ex, ey = centre_xy
+    corners = _to_optical(T, [(ex + sx * radius, ey + sy * radius, z)
+                              for sx in (-1, 1) for sy in (-1, 1)
+                              for z in z_range])
+    if np.any(corners[:, 2] <= 0.0):
+        return None, 'station is behind the camera'
+    us = fx * corners[:, 0] / corners[:, 2] + cx
+    vs = fy * corners[:, 1] / corners[:, 2] + cy
+    h, w = shape
+    u0, u1 = max(int(us.min()), 0), min(int(math.ceil(us.max())) + 1, w)
+    v0, v1 = max(int(vs.min()), 0), min(int(math.ceil(vs.max())) + 1, h)
+    if u0 >= u1 or v0 >= v1:
+        return None, 'station is out of view'
+    return (u0, u1, v0, v1), None
+
+
 def _volume_interval(T, K, box, centre_xy, slab):
     """Return per-pixel optical depths where each ray enters and leaves the search volume."""
     fx, fy, cx, cy = K
@@ -202,18 +221,11 @@ def observe(frame, calib, profile, expected_xy):
     T = calib.T_world_optical
     lo, hi = (L.COUNTER_Z + z for z in profile.slab)
     ex, ey = expected_xy
-    corners = _to_optical(T, [(ex + sx * SEARCH_R, ey + sy * SEARCH_R, z)
-                              for sx in (-1, 1) for sy in (-1, 1)
-                              for z in (lo, hi)])
-    if np.any(corners[:, 2] <= 0.0):
-        return unknown('station is behind the camera', frame)
-    us = fx * corners[:, 0] / corners[:, 2] + cx
-    vs = fy * corners[:, 1] / corners[:, 2] + cy
-    h, w = frame.depth.shape
-    u0, u1 = max(int(us.min()), 0), min(int(math.ceil(us.max())) + 1, w)
-    v0, v1 = max(int(vs.min()), 0), min(int(math.ceil(vs.max())) + 1, h)
-    if u0 >= u1 or v0 >= v1:
-        return unknown('station is out of view', frame)
+    box, why = station_box(frame.K, T, expected_xy, SEARCH_R, (lo, hi),
+                           frame.depth.shape)
+    if box is None:
+        return unknown(why, frame)
+    u0, u1, v0, v1 = box
 
     roi = frame.depth[v0:v1, u0:u1]
     near, far = calib.depth_range

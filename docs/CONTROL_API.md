@@ -281,6 +281,76 @@ the camera model in `bar_world.sdf`; on hardware,
 `scripts/calibrate_stand_camera.py` writes one and `--camera-config` points
 the server at it.
 
+#### Which bottle it is (`label`)
+
+In `camera` and `compare` modes, each occupied bottle station also carries a
+`label` field, when PaddleOCR is installed or Gemini is configured
+(`GEMINI_API_KEY` and `GEMINI_VISION_MODEL`):
+
+```json
+"label": { "brand": "Jack Daniel's", "type": "whiskey", "volume_ml": 700,
+           "confidence": 1.0, "source": "inventory", "reason": null,
+           "read": { "brand": "", "type": "whiskey", "volume_ml": 700,
+                     "abv_percent": 40.0,
+                     "text_read": "JACK DANIEL'S Tennessee WHISKEY 40% VoL. 70c" } }
+```
+
+The station's box is cropped from the colour image, and PaddleOCR and Gemini
+both start on it at once (`bartender_api/drink/label.py`):
+
+1. **PaddleOCR, offline, wins when it is sure.** It reads the label text, and
+   regexes pull out the type (words like `WHISKEY`, `VODKA`/`WÓDKA`, `GIN`,
+   `ジン`), the volume (`70cl`, `500 ml`, `0,75 l`) and the ABV (`40% vol`).
+   No pattern says which word is the brand, so the brand can only come from
+   the inventory. If the text names a stocked bottle, that is the answer at
+   once and Gemini's is thrown away. The crop is enlarged 2× first; each
+   bottle takes about 1.5–3.5 s on CPU.
+2. **Otherwise Gemini's answer**, unless it is unknown. It has been running
+   since the start, so the wait is about Gemini's own time, not OCR's plus
+   Gemini's. A Gemini request is cut off after 15 s (`vlm.TIMEOUT_S`).
+3. **OCR's partial answer** stands when Gemini is off, fails, times out or
+   is over quota. For example, a type read from the label with no brand.
+
+Running both costs **one Gemini request per bottle read**, even when OCR
+alone would have been enough. The free tier allows 20 requests a day per
+model, which a demo can use up; a failed Gemini call still leaves OCR's
+answer.
+
+Every reading is then checked against the bottle inventory,
+`bartender_api/config/bottles.yaml` (`server --bottles` points at another
+one). Both readers misread stylised and Japanese brand names, and a volume
+read can change between runs, so a known bottle's fields always come from
+the inventory:
+
+| Case | `source` | `confidence` | Fields from |
+|---|---|---|---|
+| Brand or one of its `aliases` in the text read (or Gemini's brand a close spelling match, at least 0.8) | `inventory` | 1.0 (or the match score) | the inventory row |
+| Gemini names a brand not in the inventory, and that brand is in the text it read | `gemini` | 0.5 | Gemini's reading |
+| Brand not read; the type spelled on the label matches exactly one row | `inventory` | 0.6 | that row |
+| Brand not read; type spelled on the label, not in the inventory or in several rows | `ocr` or `gemini` | 0.4 | the reading, with `brand: null` |
+| Nothing usable read | none | 0.0 | `type: null` |
+
+- **`type: null`** means don't know, as with `unknown` elsewhere. `reason`
+  says why, and `read` shows what the label said. `brand: null` with a type
+  means the kind of bottle is known but not the brand.
+- A brand or type counts only when it appears in the text read. From
+  straight above, Gemini named a brand with no label text in view, and that
+  is dropped.
+- A misread brand whose wrong text Gemini also reports as read can come back
+  as a new bottle with the right type and the wrong brand. Adding that
+  misreading to the row's `aliases` fixes it.
+- **`volume_ml`** is what the bottle holds when full, not what is left in it.
+- A label is read **once per bottle**: kept until the station is seen empty,
+  and a failed read is retried every 30 s. A first read can hold `/world`
+  for a few seconds per bottle.
+- On phone photos of the bar, OCR alone named Jack Daniel's and Tenjaku, but
+  read nothing from the small Żubrówka label, which needs Gemini.
+  `scripts/read_labels.py PHOTO --box u0,u1,v0,v1 [--no-gemini]` runs the
+  same reading on a photo (phone `.dng` included).
+- The Docker image downloads the OCR models when it is built
+  (`PADDLE_PDX_CACHE_HOME=/opt/models/paddlex`), so OCR needs no network at
+  run time.
+
 ### 2. Feasibility — "could you?"
 
 ```

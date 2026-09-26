@@ -281,6 +281,25 @@
             </noise>
           </camera>
         </sensor>
+        <!-- Colour twin of stand_depth: same pose, FOV and size, so pixels line up (OAK-D aligns RGB to depth). -->
+        <sensor name="stand_rgb" type="camera">
+          <always_on>true</always_on>
+          <update_rate>5</update_rate>
+          <topic>/bartender/stand_camera/rgb</topic>
+          <ignition_frame_id>stand_camera_optical_frame</ignition_frame_id>
+          <camera>
+            <horizontal_fov>1.2566</horizontal_fov>
+            <image>
+              <width>640</width>
+              <height>400</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.2</near>
+              <far>5.0</far>
+            </clip>
+          </camera>
+        </sensor>
       </link>
     </model>
 

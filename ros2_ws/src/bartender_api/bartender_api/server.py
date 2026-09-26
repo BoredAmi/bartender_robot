@@ -41,7 +41,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import numpy as np
 import rclpy
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from bartender_open import layout as L
 from rclpy.executors import MultiThreadedExecutor
@@ -55,6 +57,7 @@ from bartender_teach.point_store import (
 )
 from bartender_teach.teach_points import TeachNode
 
+from .drink import label, ocr, vlm
 from . import feasibility, menu, movement, perception, state_view, world
 
 # Same topic, same QoS, same reasoning as open_action_server's _on_poses:
@@ -90,6 +93,14 @@ class PoseCache(Node):
 
 DEPTH_TOPIC = '/bartender/stand_camera/depth'
 CAMERA_INFO_TOPIC = '/bartender/stand_camera/camera_info'
+# Same pose and intrinsics as the depth sensor, so its pixels line up with depth.
+RGB_TOPIC = '/bartender/stand_camera/rgb'
+
+# ponytail: calibration knobs; a box round a bottle station, tall enough for the
+# label, and how long an unreadable label waits before it is read again.
+BOTTLE_ROI_R = 0.06
+BOTTLE_ROI_H = 0.32
+LABEL_RETRY_S = 30.0
 
 
 class DepthCache(Node):
@@ -101,10 +112,13 @@ class DepthCache(Node):
         self._received = None
         self._info = None
         self._decoded = (None, None, None)   # (image, info, (depth, K))
+        self._rgb = None
+        self._rgb_received = None
         self._lock = threading.Lock()
         self.create_subscription(Image, DEPTH_TOPIC, self._on_image, FRESH)
         self.create_subscription(
             CameraInfo, CAMERA_INFO_TOPIC, self._on_info, FRESH)
+        self.create_subscription(Image, RGB_TOPIC, self._on_rgb, FRESH)
 
     def _on_image(self, msg):
         with self._lock:
@@ -115,6 +129,25 @@ class DepthCache(Node):
     def _on_info(self, msg):
         with self._lock:
             self._info = msg
+
+    def _on_rgb(self, msg):
+        with self._lock:
+            self._rgb = msg
+            self._rgb_received = time.monotonic()
+
+    def rgb(self):
+        """Return (BGR ndarray, None) or (None, why there is none)."""
+        with self._lock:
+            image, received = self._rgb, self._rgb_received
+        if image is None:
+            return None, f'no colour image on {RGB_TOPIC}'
+        if time.monotonic() - received > perception.MAX_FRAME_AGE_S:
+            return None, 'colour image is stale'
+        bgr = decode_colour(image.encoding, image.data, image.height,
+                            image.width, image.step)
+        if bgr is None:
+            return None, f'unsupported colour encoding {image.encoding!r}'
+        return bgr, None
 
     def frame(self):
         """Return (perception.Frame, None) or (None, why there is none)."""
@@ -143,6 +176,61 @@ class DepthCache(Node):
                                 time.monotonic() - received), None
 
 
+def decode_colour(encoding, data, height, width, step):
+    """Decode rgb8/bgr8 to a BGR array, else None."""
+    if encoding not in ('rgb8', 'bgr8'):
+        return None
+    rows = np.frombuffer(data, dtype=np.uint8).reshape(height, step)
+    bgr = rows[:, :width * 3].reshape(height, width, 3)
+    return np.ascontiguousarray(bgr[..., ::-1] if encoding == 'rgb8' else bgr)
+
+
+def make_label_watcher(depth_cache, calib, inventory):
+    """Return see(station, occupied) -> label.Label | None, or None without OCR or Gemini.
+
+    A label is read once per bottle: kept until the station is seen empty,
+    and an unknown reading is retried every LABEL_RETRY_S.
+    """
+    read_text = ocr.make_reader()
+    ask = vlm.make_asker(label.PROMPT, label.schema(inventory))
+    if read_text is None and ask is None:
+        return None
+    known = {}   # station -> (read at, Label)
+    # ponytail: one lock over the OCR and Gemini calls, so a first read holds
+    # /world for a few seconds per bottle; read in a background thread if a poller minds.
+    lock = threading.Lock()
+
+    def look(station):
+        bgr, why = depth_cache.rgb()
+        if bgr is None:
+            return label.unknown(why)
+        frame, why = depth_cache.frame()
+        if frame is None:
+            return label.unknown(why)
+        box, why = perception.station_box(
+            frame.K, calib.T_world_optical, L.STATIONS[station], BOTTLE_ROI_R,
+            (L.COUNTER_Z, L.COUNTER_Z + BOTTLE_ROI_H), bgr.shape[:2])
+        if box is None:
+            return label.unknown(why)
+        u0, u1, v0, v1 = box
+        return label.read_label(bgr[v0:v1, u0:u1], inventory, read_text, ask)
+
+    def see(station, occupied):
+        with lock:
+            if occupied is False:
+                known.pop(station, None)
+                return None
+            at, seen = known.get(station, (-float('inf'), None))
+            retry = seen is None or (
+                seen.type is None
+                and time.monotonic() - at >= LABEL_RETRY_S)
+            if occupied and retry:
+                seen = look(station)
+                known[station] = (time.monotonic(), seen)
+            return seen
+    return see
+
+
 def make_observer(depth_cache, calib):
     def observe(station):
         frame, why_not = depth_cache.frame()
@@ -154,7 +242,7 @@ def make_observer(depth_cache, calib):
 
 
 def make_handler(pose_cache, teach_node, move_bridge, observe=None,
-                 mode='ground_truth'):
+                 mode='ground_truth', see_label=None):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -186,7 +274,8 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
         def do_GET(self):
             path = self.path.split('?')[0].rstrip('/') or '/'
             if path == '/world':
-                self._send(200, world.build(pose_cache.get, observe, mode).to_json())
+                self._send(200, world.build(pose_cache.get, observe, mode,
+                                            see_label).to_json())
             elif path == '/state':
                 self._send(200, state_view.build(teach_node))
             elif path == '/bottles':
@@ -262,12 +351,13 @@ def _load_calibration(mode, path):
         return None, False
 
 
-def _attach_observer(executor, calib):
+def _attach_observer(executor, calib, inventory):
     if calib is None:
-        return None
+        return None, None
     depth_cache = DepthCache()
     executor.add_node(depth_cache)
-    return make_observer(depth_cache, calib)
+    return (make_observer(depth_cache, calib),
+            make_label_watcher(depth_cache, calib, inventory))
 
 
 def _wait_for_ground_truth(pose_cache, timeout=10.0):
@@ -291,6 +381,10 @@ def main(args=None):
     parser.add_argument('--camera-config', default=None,
                         help='stand camera calibration YAML (default: the '
                              'sim one in this package\'s config/)')
+    parser.add_argument('--bottles', default=None,
+                        help='bottle inventory YAML that label readings are '
+                             'matched against (default: config/bottles.yaml '
+                             'in this package)')
     parser.add_argument('--points', default=None,
                         help='point file: a path, or a bare name like '
                              '`workcell` for bartender_teach/config/'
@@ -307,6 +401,14 @@ def main(args=None):
     calib, ok = _load_calibration(opts.perception, opts.camera_config)
     if not ok:
         return 1
+    bottles_path = opts.bottles or os.path.join(
+        get_package_share_directory('bartender_api'), 'config', 'bottles.yaml')
+    try:
+        inventory = label.load_inventory(bottles_path)
+    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        print(f'cannot load bottle inventory {bottles_path}: {exc}',
+              file=sys.stderr)
+        return 1
 
     rclpy.init(args=None)
     pose_cache = PoseCache()
@@ -314,7 +416,7 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(pose_cache)
     executor.add_node(teach_node)
-    observe = _attach_observer(executor, calib)
+    observe, see_label = _attach_observer(executor, calib, inventory)
     threading.Thread(target=executor.spin, daemon=True).start()
 
     if opts.perception == 'compare' and not _wait_for_ground_truth(pose_cache):
@@ -350,7 +452,7 @@ def main(args=None):
         server = ThreadingHTTPServer(
             (opts.host, opts.port),
             make_handler(pose_cache, teach_node, move_bridge, observe,
-                         opts.perception))
+                         opts.perception, see_label))
     except OSError as exc:
         print(f'cannot bind {opts.host}:{opts.port}: {exc}', file=sys.stderr)
         executor.shutdown()

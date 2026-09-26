@@ -47,6 +47,12 @@ docker_args=(
     --workdir /workspace
 )
 
+# Secrets such as GEMINI_API_KEY stay out of the image: they come from the
+# git-ignored .env at run time (KEY=value lines, no quotes, no `export`).
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    docker_args+=(--env-file "${PROJECT_DIR}/.env")
+fi
+
 # Forward the current X11 authentication cookie without opening the X server
 # to every local client (as `xhost +` would do).
 xauthority_path="${XAUTHORITY:-${HOME}/.Xauthority}"
