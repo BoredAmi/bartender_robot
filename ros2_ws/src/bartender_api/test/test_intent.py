@@ -97,3 +97,11 @@ def test_no_text_is_refused_without_calling_jev(text):
     ask, sent = _jev('make')
     assert intent.route(text, DRINKS, BOTTLES, ask)['ok'] is False
     assert sent == []
+
+
+def test_a_drink_whose_scripts_are_not_taught_is_refused_not_proposed():
+    ask, _ = _jev('make', 0.95, 'cyder', 0.9)
+    got = intent.route('one cider', DRINKS, BOTTLES, ask, not_ready=['cyder'])
+    assert got['ok'] is False
+    assert got['why'].startswith('cyder is on the menu but not ready yet')
+    assert 'request' not in got
