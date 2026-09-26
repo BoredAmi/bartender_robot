@@ -32,20 +32,29 @@ GLASS_HOME = (0.20, -0.55)
 GLASS_JITTER = 0.05
 DISTRACTOR_P = 0.30
 POUR_P = 0.40
-# Robotiq 2F-85 knuckle: 0 open, ~0.8 fully shut; on a bottle neck it stops
-# around 0.45. Above 0.2 and the bottle lifted = held.
-KNUCKLE_CLOSED = 0.2
-LIFTED = 0.02
+# PourDrink feedback states "<phase>_<bottle>" in which that bottle is in the
+# gripper: from the lift off its stand until it is set back down. Taken from the
+# server's own state machine rather than guessed from finger angle and height,
+# which labelled 1 of ~60 held frames in the first trial.
+HELD_PHASES = {'lifting', 'moving_to_glass', 'tilting_to_pour', 'pouring',
+               'checking_grip', 'returning_upright', 'returning', 'lowering'}
+# A bottle leaning more than this at the end of a pour fell over (the scripted
+# place can land it on the stand's rim); such scenes are flagged, not dropped.
+UPRIGHT_MAX_TILT_DEG = 20
 HIDDEN = (5.0, 0.0, 0.2)
 DISTRACTOR_SDF = '/tmp/vlm_distractor.sdf'
 
 
-def held_bottle(knuckle, bottle_z, rest_z):
-    """Which bottle the gripper holds: closed fingers and a bottle off its stand."""
-    if knuckle < KNUCKLE_CLOSED:
-        return None
-    lifted = [name for name, z in bottle_z.items() if z - rest_z[name] > LIFTED]
-    return lifted[0] if len(lifted) == 1 else None
+def held_bottle(state):
+    """Bottle in the gripper for a PourDrink feedback state, e.g. 'pouring_whiskey'."""
+    phase, _, bottle = state.rpartition('_')
+    return bottle if phase in HELD_PHASES else None
+
+
+def tilt_deg(q):
+    """Angle between a model's up axis and the world's, from its orientation quaternion."""
+    up_z = 1 - 2 * (q.x ** 2 + q.y ** 2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, up_z))))
 
 
 def sample_scene(rng):
@@ -103,7 +112,7 @@ class Capture:
     def __init__(self):
         import rclpy
         from rclpy.action import ActionClient
-        from sensor_msgs.msg import Image, JointState
+        from sensor_msgs.msg import Image
         from tf2_msgs.msg import TFMessage
         from bartender_pour_interfaces.action import PourDrink
 
@@ -112,7 +121,8 @@ class Capture:
         self.node = rclpy.create_node('capture_vlm_frames')
         self.latest = {}
         self.poses = {}
-        self.knuckle = 0.0
+        self.state = ''
+        self.phases = []
         for cam, base in CAMERAS.items():
             for kind, topic in (('rgb', f'{base}/{RGB_TOPIC[cam]}'),
                                 ('labels', f'{base}/segmentation/labels_map')):
@@ -120,14 +130,14 @@ class Capture:
                     Image, topic, lambda m, k=(cam, kind): self.latest.__setitem__(k, m), 2)
         self.node.create_subscription(
             TFMessage, f'/world/{WORLD}/dynamic_pose/info',
-            lambda m: self.poses.update({t.child_frame_id: t.transform.translation for t in m.transforms}), 2)
-        self.node.create_subscription(JointState, '/joint_states', self._on_joints, 10)
+            lambda m: self.poses.update({t.child_frame_id: t.transform for t in m.transforms}), 2)
         self.pour = ActionClient(self.node, PourDrink, 'pour_drink')
         self.PourDrink = PourDrink
 
-    def _on_joints(self, msg):
-        if 'robotiq_85_left_knuckle_joint' in msg.name:
-            self.knuckle = msg.position[msg.name.index('robotiq_85_left_knuckle_joint')]
+    def on_feedback(self, msg):
+        if msg.feedback.state != self.state:
+            self.state = msg.feedback.state
+            self.phases.append((round(time.monotonic() - self.t0, 1), self.state))
 
     def spin(self, seconds):
         end = time.monotonic() + seconds
@@ -145,8 +155,9 @@ class Capture:
                 return pairs
         raise TimeoutError('cameras did not deliver matching frames')
 
-    def bottle_z(self):
-        return {b: self.poses[m].z for b, m in MODELS.items() if m in self.poses}
+    def upright(self):
+        return {b: tilt_deg(self.poses[m].rotation) < UPRIGHT_MAX_TILT_DEG
+                for b, m in MODELS.items() if m in self.poses}
 
 
 def save(scene_dir, index, pairs, in_gripper):
@@ -176,26 +187,37 @@ def static_scene(cap, scene_dir, rng):
         spawn_distractor(*scene['distractor'])
     cap.spin(1.5)  # let the physics settle before rendering
     save(scene_dir, 0, cap.frames(), None)
-    return [*scene['shown'], 'beer']
+    return [*scene['shown'], 'beer'], {'params': scene}
 
 
-def pour_scene(cap, scene_dir, max_frames=120):
+def pour_scene(cap, scene_dir, max_frames=300):
+    """Run the scripted pour (whiskey then cola, from their home spots) and film it.
+
+    At the sim's ~1.7 fps software rendering the whole recipe takes ~200 frames.
+    """
     reset()
     cap.spin(1.5)
-    rest_z = cap.bottle_z()
+    cap.state, cap.phases, cap.t0 = '', [], time.monotonic()
     goal = cap.PourDrink.Goal(bottle_id='whiskey', glass_id='serving_glass', pour_amount_ml=40.0)
     cap.pour.wait_for_server(timeout_sec=60)
-    accepted = cap.pour.send_goal_async(goal)
+    accepted = cap.pour.send_goal_async(goal, feedback_callback=cap.on_feedback)
     finished = None
     for i in range(max_frames):
         pairs = cap.frames()
-        save(scene_dir, i, pairs, held_bottle(cap.knuckle, cap.bottle_z(), rest_z))
+        save(scene_dir, i, pairs, held_bottle(cap.state))
         if finished is None and accepted.done():
             finished = accepted.result().get_result_async()
         if finished is not None and finished.done():
             break
         cap.spin(1.0)
-    return ['whiskey', 'cola', 'beer']
+    result = finished.result().result if finished is not None and finished.done() else None
+    return ['whiskey', 'cola', 'beer'], {'pour': {
+        'finished': result is not None,
+        'success': bool(result and result.success),
+        'message': result.message if result else 'still running at max_frames',
+        'phases': cap.phases,
+        'upright_after': cap.upright(),
+    }}
 
 
 def main():
@@ -211,10 +233,15 @@ def main():
         scene_dir = opts.out / f's{opts.seed:02d}_{n:05d}'
         scene_dir.mkdir(parents=True, exist_ok=True)
         pour = rng.random() < POUR_P
-        bottles = pour_scene(cap, scene_dir) if pour else static_scene(cap, scene_dir, rng)
-        (scene_dir / 'scene.json').write_text(json.dumps({'bottles': bottles, 'glasses': ['glass']}))
-        print(f'{scene_dir.name} {"pour" if pour else "static"} {len(list(scene_dir.glob("*.json"))) - 1} frames',
-              flush=True)
+        started = time.monotonic()
+        bottles, log = pour_scene(cap, scene_dir) if pour else static_scene(cap, scene_dir, rng)
+        frames = len(list(scene_dir.glob('*_overhead_rgb.png')))
+        (scene_dir / 'scene.json').write_text(json.dumps({
+            'bottles': bottles, 'glasses': ['glass'], 'kind': 'pour' if pour else 'static',
+            'seed': opts.seed, 'index': n, 'frames': frames,
+            'seconds': round(time.monotonic() - started, 1), **log}, indent=1))
+        print(f'{scene_dir.name} {"pour" if pour else "static"} {frames} frames '
+              f'{json.dumps(log.get("pour", {}).get("upright_after", ""))}', flush=True)
 
 
 if __name__ == '__main__':
