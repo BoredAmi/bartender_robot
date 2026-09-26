@@ -297,11 +297,16 @@ def test_choices_answers_while_a_drink_is_being_made(tmp_path):
                                      'pour_cola': ['grab_point']})
     bridge._lock.acquire()   # what /make holds for the whole drink
     try:
-        drinks, bottles = bridge.choices()
+        drinks, not_ready, bottles = bridge.choices()
     finally:
         bridge._lock.release()
     assert drinks == {'whiskey_cola': 'Whiskey & Cola', 'gin_sprite': 'gin_sprite'}
-    assert bottles == ['gin', 'whiskey']
+    assert (not_ready, bottles) == ([], ['gin', 'whiskey'])
+
+
+def test_choices_names_the_drinks_whose_scripts_are_not_taught(tmp_path):
+    _, not_ready, bottles = _make_bridge(tmp_path).choices()
+    assert (not_ready, bottles) == (['gin_sprite'], ['whiskey'])
 
 
 def test_drinks_says_which_are_ready_and_what_is_missing(tmp_path):

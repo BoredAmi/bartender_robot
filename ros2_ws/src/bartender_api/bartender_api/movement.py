@@ -241,19 +241,22 @@ class MovementBridge:
             return None, str(exc)
 
     def choices(self):
-        """Return ({drink key: name}, [bottle]) for /ask, without waiting on a running command.
+        """Return ({drink key: name}, [drink not ready], [bottle]) for /ask, without the lock.
 
         Read straight from disk into a store of its own: drinks() and
         bottles() take the command lock, which /make holds for a whole drink,
         so asking during one would hang until the drink was done.
         """
         drinks, _ = self._menu()
+        drinks = drinks or {}
+        path = self.pendant.store.path
         try:
-            pipelines = PointStore.load(self.pendant.store.path).pipelines
+            store = PointStore.load(path)
         except PointStoreError:
-            pipelines = {}   # /ask then answers "which bottle? known: none"
-        return ({key: d.name for key, d in (drinks or {}).items()},
-                _bottle_names(pipelines))
+            store = PointStore(path)   # empty: no bottle to pick, no drink ready
+        return ({key: d.name for key, d in drinks.items()},
+                [key for key, d in drinks.items() if any(d.missing(store))],
+                _bottle_names(store.pipelines))
 
     def drinks(self):
         """Return the menu, each drink saying whether its scripts are taught."""

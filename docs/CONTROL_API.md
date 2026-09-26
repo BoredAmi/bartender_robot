@@ -153,7 +153,9 @@ The first call can take about 2 s. The text is sent to OpenRouter, and
 `/world`, `/drinks`, `/make` (a drink from the live menu) or `/pick` (a
 taught bottle), or refuses. A pick below 0.6 confidence
 (`intent.MIN_CONFIDENCE`) is answered 422 with `why` (for example "please
-rephrase" or "which drink?"), never with a guess. `/can` is not offered
+rephrase" or "which drink?"), never with a guess. A drink on the menu
+whose scripts are not all taught is also refused ("not ready yet"), since
+`/make` would only refuse it. `/can` is not offered
 yet, because it needs a station and a glass that free text rarely names.
 
 **From another machine on the same LAN:** bind to this host's LAN address
@@ -349,6 +351,8 @@ the inventory:
 | Case | `source` | `confidence` | Fields from |
 |---|---|---|---|
 | Brand or one of its `aliases` in the text read (or Gemini's brand a close spelling match, at least 0.8) | `inventory` | 1.0 (or the match score) | the inventory row |
+| OCR text names no brand outright; `label.fuzzy` finds a stocked brand in its words | `fuzzy` | the similarity score, 0.8–1.0 | the inventory row |
+| Fuzzy found none; Jev (`JEV_KEY` set) picks a stocked brand from the OCR text | `jev` | Jev's confidence, 0.8–1.0 | the inventory row |
 | Gemini names a brand not in the inventory, and that brand is in the text it read | `gemini` | 0.5 | Gemini's reading |
 | Brand not read; the type spelled on the label matches exactly one row | `inventory` | 0.6 | that row |
 | Brand not read; type spelled on the label, not in the inventory or in several rows | `ocr` or `gemini` | 0.4 | the reading, with `brand: null` |

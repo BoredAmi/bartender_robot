@@ -56,8 +56,12 @@ def _refuse(why, answers=None):
     return out
 
 
-def route(text, drinks, bottles, ask):
-    """Return {"ok", "action", "confidence", "request": {method, path, body}} or a refusal."""
+def route(text, drinks, bottles, ask, not_ready=()):
+    """Return {"ok", "action", "confidence", "request": {method, path, body}} or a refusal.
+
+    A drink in `not_ready` (its scripts are not all taught) is refused here
+    rather than proposed, since /make would only refuse it.
+    """
     if not isinstance(text, str) or not text.strip():
         return _refuse('ask needs some text')
     answers, why = ask({'customer_request': text.strip()}, questions(drinks, bottles))
@@ -77,6 +81,9 @@ def route(text, drinks, bottles, ask):
         known = list(drinks) if field == 'drink' else list(bottles)
         if picked['choice'] == NONE or picked['confidence'] < MIN_CONFIDENCE:
             return _refuse(f'which {field}? known: {", ".join(known) or "none"}', answers)
+        if picked['choice'] in not_ready:
+            return _refuse(f'{picked["choice"]} is on the menu but not ready yet: '
+                           'its scripts are not all taught', answers)
         body = {field: picked['choice']}
         confidence = min(confidence, picked['confidence'])
     return {'ok': True, 'action': action['choice'], 'confidence': round(confidence, 3),

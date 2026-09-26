@@ -327,8 +327,8 @@ def make_handler(pose_cache, teach_node, move_bridge, observe=None,
             if ask_jev is None:
                 self._send(503, {'error': 'set JEV_KEY to use /ask'})
                 return
-            drinks, bottles = move_bridge.choices()
-            result = intent.route(body.get('text'), drinks, bottles, ask_jev)
+            drinks, not_ready, bottles = move_bridge.choices()
+            result = intent.route(body.get('text'), drinks, bottles, ask_jev, not_ready)
             self._send(200 if result['ok'] else 422, result)
 
         def _do_move(self, kind, body, field_names):
@@ -459,12 +459,13 @@ def main(args=None):
         menu_arg = opts.points
     menu_path = menu.menu_path_for(menu_arg)
     move_bridge = movement.MovementBridge(teach_node, store, menu_path)
+    ask_jev = jev.make_asker()
 
     try:
         server = ThreadingHTTPServer(
             (opts.host, opts.port),
             make_handler(pose_cache, teach_node, move_bridge, observe,
-                         opts.perception, see_label, jev.make_asker()))
+                         opts.perception, see_label, ask_jev))
     except OSError as exc:
         print(f'cannot bind {opts.host}:{opts.port}: {exc}', file=sys.stderr)
         executor.shutdown()
@@ -485,7 +486,8 @@ def main(args=None):
     print('    POST /pick       {"bottle": "whiskey"}')
     print('    GET  /drinks')
     print('    POST /make       {"drink": "whiskey_cola"}')
-    print('    POST /ask        {"text": "a whiskey coke please"}')
+    print('    POST /ask        {"text": "a whiskey coke please"}'
+          + ('' if ask_jev else '  -- off: set JEV_KEY'))
     print(f'  points: {points_path}')
     print(f'  menu:   {menu_path or "none (--menu)"}')
     if opts.host not in ('127.0.0.1', 'localhost'):
