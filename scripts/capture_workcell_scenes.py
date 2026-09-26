@@ -18,6 +18,9 @@ contract with vlm/training (vlm_labels.py and the harness):
 
 --params takes a JSON file overriding SCENE_PARAMS, which is how the VLM
 harness steers what gets generated towards the cases the model gets wrong.
+Re-running the same command after a crash resumes: finished scenes are
+skipped and their random draws replayed, so the result is the same as an
+uninterrupted run.
 """
 import argparse
 import colorsys
@@ -461,6 +464,14 @@ def apply_appearance(ids, look, distractor_colours):
                 set_colour(i, rgb)
 
 
+def replay(rng, params):
+    """Draw what a scene draws, in the same order as main(), without the sim."""
+    layout = sample_layout(rng, params)
+    sample_appearance(rng, params)
+    sample_arm(rng, params, layout)
+    sample_camera(rng, params)
+
+
 def save(scene_dir, rgb, labels, frame):
     from PIL import Image as PILImage
     img = np.frombuffer(rgb.data, np.uint8).reshape(rgb.height, rgb.width, -1)
@@ -501,6 +512,9 @@ def main():
         for n in range(opts.scenes):
             started = time.monotonic()
             scene_dir = opts.out / f'w{opts.seed:03d}_{n:05d}'
+            if (scene_dir / 'scene.json').exists():
+                replay(rng, params)
+                continue
             scene_dir.mkdir(parents=True, exist_ok=True)
             # Clear the table first, so bottles are never teleported into the arm.
             sim.move_arm(HOME, seconds=1.0, wait=2.0)
